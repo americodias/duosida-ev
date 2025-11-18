@@ -7,6 +7,9 @@ Python library for direct TCP control of Duosida EV wall chargers, bypassing the
 - **Network Discovery**: Find Duosida chargers on your local network
 - **Real-time Telemetry**: Read voltage, current, power, temperature, and energy consumption
 - **Current Control**: Set maximum charging current (6-32A)
+- **Start/Stop Charging**: Remote control to start or stop charging sessions
+- **Configuration Settings**: Connection timeout, max/min voltage, max temperature, direct work mode
+- **JSON Export**: Get telemetry data as JSON for integration with other tools
 - **No Cloud Required**: Direct TCP communication with the charger
 
 ## Installation
@@ -64,6 +67,67 @@ charger.set_max_current(16)  # Set to 16A
 charger.disconnect()
 ```
 
+### Configure Charger Settings
+
+```python
+charger.connect()
+
+# Connection timeout (30-900 seconds)
+charger.set_connection_timeout(120)
+
+# Temperature limits (85-95°C)
+charger.set_max_temperature(90)
+
+# Voltage limits
+charger.set_max_voltage(280)    # 265-290V
+charger.set_min_voltage(90)     # 70-110V
+
+# Direct work mode (plug and charge)
+charger.set_direct_work_mode(True)   # Enable
+charger.set_direct_work_mode(False)  # Disable
+
+# LED brightness (0=off, 1=low, 3=high)
+charger.set_led_brightness(3)
+
+# Generic config (any key/value)
+charger.set_config("VendorMaxWorkCurrent", "16")
+
+charger.disconnect()
+```
+
+### Start/Stop Charging
+
+```python
+charger.connect()
+
+# Start charging
+charger.start_charging()
+
+# Stop charging
+charger.stop_charging()
+
+charger.disconnect()
+```
+
+### Get Telemetry as JSON
+
+```python
+import json
+
+charger.connect()
+status = charger.get_status()
+
+# Convert to dictionary
+data = status.to_dict()
+print(json.dumps(data, indent=2))
+
+# Access individual fields
+print(f"CP Voltage: {status.cp_voltage}V")
+print(f"State: {status.state}")
+
+charger.disconnect()
+```
+
 ### Monitor Continuously
 
 ```python
@@ -84,11 +148,28 @@ duosida discover
 # Get charger status
 duosida status --host 192.168.20.95 --device-id YOUR_DEVICE_ID
 
+# Get status in JSON format
+duosida status --host 192.168.20.95 --device-id YOUR_DEVICE_ID --json
+
 # Set maximum current
 duosida set-current --host 192.168.20.95 --device-id YOUR_DEVICE_ID 16
 
+# Start charging
+duosida start --host 192.168.20.95 --device-id YOUR_DEVICE_ID
+
+# Stop charging
+duosida stop --host 192.168.20.95 --device-id YOUR_DEVICE_ID
+
 # Monitor continuously
 duosida monitor --host 192.168.20.95 --device-id YOUR_DEVICE_ID
+
+# Configuration commands (host only - device ID auto-discovered)
+duosida set-timeout --host 192.168.20.95 120          # 30-900 seconds
+duosida set-max-temp --host 192.168.20.95 90          # 85-95°C
+duosida set-max-voltage --host 192.168.20.95 280      # 265-290V
+duosida set-min-voltage --host 192.168.20.95 90       # 70-110V
+duosida set-direct-mode --host 192.168.20.95 on       # on/off
+duosida set-led-brightness --host 192.168.20.95 3     # 0=off, 1=low, 3=high
 ```
 
 ## Telemetry Fields
@@ -134,15 +215,82 @@ The device ID can be found:
 - **Message Format**: Protobuf
 - **Discovery**: UDP broadcast on port 48890/48899
 
+See [Settings Reference](docs/SETTINGS.md) for detailed documentation on charger configuration options (Direct Work Mode, Level Detection, etc.).
+
+## Capturing Network Traffic
+
+To capture traffic between the Duosida app and charger for reverse engineering, you can use Wireshark on a computer connected to the same network, or use tcpdump on your router if it supports SSH access.
+
+### Using Wireshark
+
+1. Install [Wireshark](https://www.wireshark.org/)
+2. Connect your computer to the same network as the charger
+3. Start capture with filter: `host <charger-ip> and tcp port 9988`
+4. Use the Duosida app to interact with the charger
+5. Stop capture and save the `.pcap` file
+
+### Using tcpdump on Router
+
+If your router supports SSH (OpenWrt, DD-WRT, etc.):
+
+```bash
+ssh root@<router-ip>
+
+# Capture traffic to/from charger
+tcpdump -i br-lan -w /tmp/charger_capture.pcap \
+  'host <charger-ip> and tcp port 9988'
+```
+
+Download the capture:
+
+```bash
+scp root@<router-ip>:/tmp/charger_capture.pcap ./charger_capture.pcap
+```
+
+<details>
+<summary>UniFi Dream Machine Pro specific instructions</summary>
+
+For UDM Pro with separate access points, you need to SSH into the Access Point where the phone or charger is connected (not the UDM Pro itself, since local traffic may not pass through the router):
+
+```bash
+# SSH into the Access Point (not the UDM Pro)
+ssh root@<access-point-ip>
+
+# Capture on the wireless interface (ra2) for your IoT VLAN
+tcpdump -i ra2 -w /tmp/charger_capture.pcap \
+  'host 192.168.20.95 and host 192.168.20.124 and tcp port 9988'
+```
+
+Options:
+- `-i ra2` - Interface for 2.4GHz/5GHz AP (wireless)
+- `host 192.168.20.95` - Charger IP
+- `host 192.168.20.124` - Phone IP (update as needed)
+
+Alternative - capture everything for 30 seconds:
+
+```bash
+timeout 30 tcpdump -i ra2 -w /tmp/charger_full.pcap \
+  'host 192.168.20.95 and tcp port 9988'
+```
+
+Download the capture from the AP:
+
+```bash
+scp root@<access-point-ip>:/tmp/charger_capture.pcap ./charger_capture.pcap
+```
+
+</details>
+
 ## TODO
 
 Features available in the [cloud API](https://github.com/jello1974/duosidaEV-home-assistant) but not yet implemented:
 
-- [ ] **Start/Stop Charging** - Remote control to start or stop charging session
-- [ ] **Direct Work Mode** - Toggle VendorDirectWorkMode setting
-- [ ] **LED Brightness** - Adjust display brightness (VendorLEDStrength)
-- [ ] **Level Detection** - Configure CheckCpN12V setting
-- [ ] **3-Phase Support** - Read voltage/current for L2 and L3 phases
+- [x] **Start/Stop Charging** - Remote control to start or stop charging session
+- [x] **Level Detection** - CP voltage display based on charging state (IEC 61851-1)
+- [x] **Direct Work Mode** - Toggle VendorDirectWorkMode setting (plug and charge)
+- [x] **3-Phase Support** - Read voltage/current for L2 and L3 phases (voltage2, voltage3, current2, current3)
+- [x] **Configuration Settings** - Connection timeout, max/min voltage, max temperature
+- [x] **LED Brightness** - Adjust display brightness (0=off, 1=low, 3=high)
 - [ ] **Charging Records** - Retrieve historical charging sessions
 - [ ] **Accumulated Energy** - Total lifetime energy consumption (may be cloud-only)
 

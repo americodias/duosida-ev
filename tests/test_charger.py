@@ -169,6 +169,168 @@ class TestDuosidaCharger(unittest.TestCase):
         mock_sock.close.assert_called_once()
         self.assertIsNone(charger.sock)
 
+    def test_start_charging(self):
+        """Test start charging command"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        charger.sock = Mock()
+        charger.sock.sendall = Mock()
+
+        result = charger.start_charging()
+
+        self.assertTrue(result)
+        charger.sock.sendall.assert_called_once()
+        # Verify the message contains field 34 (start command marker)
+        sent_data = charger.sock.sendall.call_args[0][0]
+        self.assertIn(b'\x92\x02', sent_data)  # Field 34 wire type 2
+
+    def test_stop_charging(self):
+        """Test stop charging command"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        charger.sock = Mock()
+        charger.sock.sendall = Mock()
+
+        result = charger.stop_charging()
+
+        self.assertTrue(result)
+        charger.sock.sendall.assert_called_once()
+        # Verify the message contains field 36 (stop command marker)
+        sent_data = charger.sock.sendall.call_args[0][0]
+        self.assertIn(b'\xa2\x02', sent_data)  # Field 36 wire type 2
+
+    def test_start_charging_no_connection(self):
+        """Test start charging without connection"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        # sock is None
+
+        result = charger.start_charging()
+
+        self.assertFalse(result)
+
+    def test_stop_charging_no_connection(self):
+        """Test stop charging without connection"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        # sock is None
+
+        result = charger.stop_charging()
+
+        self.assertFalse(result)
+
+    def test_set_config(self):
+        """Test generic config setting"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        charger.sock = Mock()
+        charger.sock.sendall = Mock()
+
+        result = charger.set_config("TestKey", "TestValue")
+
+        self.assertTrue(result)
+        charger.sock.sendall.assert_called_once()
+
+    def test_set_connection_timeout_valid(self):
+        """Test valid connection timeout setting"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        charger.sock = Mock()
+        charger.sock.sendall = Mock()
+
+        result = charger.set_connection_timeout(120)
+
+        self.assertTrue(result)
+        charger.sock.sendall.assert_called_once()
+
+    def test_set_connection_timeout_invalid(self):
+        """Test invalid connection timeout setting"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123", debug=False)
+        charger.sock = Mock()
+
+        # Too low
+        result = charger.set_connection_timeout(10)
+        self.assertFalse(result)
+
+        # Too high
+        result = charger.set_connection_timeout(1000)
+        self.assertFalse(result)
+
+    def test_set_max_temperature_valid(self):
+        """Test valid max temperature setting"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        charger.sock = Mock()
+        charger.sock.sendall = Mock()
+
+        result = charger.set_max_temperature(90)
+
+        self.assertTrue(result)
+        charger.sock.sendall.assert_called_once()
+
+    def test_set_max_temperature_invalid(self):
+        """Test invalid max temperature setting"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123", debug=False)
+        charger.sock = Mock()
+
+        # Too low
+        result = charger.set_max_temperature(80)
+        self.assertFalse(result)
+
+        # Too high
+        result = charger.set_max_temperature(100)
+        self.assertFalse(result)
+
+    def test_set_max_voltage_valid(self):
+        """Test valid max voltage setting"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        charger.sock = Mock()
+        charger.sock.sendall = Mock()
+
+        result = charger.set_max_voltage(280)
+
+        self.assertTrue(result)
+        charger.sock.sendall.assert_called_once()
+
+    def test_set_min_voltage_valid(self):
+        """Test valid min voltage setting"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        charger.sock = Mock()
+        charger.sock.sendall = Mock()
+
+        result = charger.set_min_voltage(90)
+
+        self.assertTrue(result)
+        charger.sock.sendall.assert_called_once()
+
+    def test_set_direct_work_mode(self):
+        """Test direct work mode setting"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        charger.sock = Mock()
+        charger.sock.sendall = Mock()
+
+        # Enable
+        result = charger.set_direct_work_mode(True)
+        self.assertTrue(result)
+
+        # Disable
+        result = charger.set_direct_work_mode(False)
+        self.assertTrue(result)
+
+    def test_set_led_brightness_valid(self):
+        """Test valid LED brightness settings"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        charger.sock = Mock()
+        charger.sock.sendall = Mock()
+
+        # Valid values: 0, 1, 3
+        for level in [0, 1, 3]:
+            result = charger.set_led_brightness(level)
+            self.assertTrue(result)
+
+    def test_set_led_brightness_invalid(self):
+        """Test invalid LED brightness settings"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123", debug=False)
+        charger.sock = Mock()
+
+        # Invalid values
+        for level in [2, 4, 50, 100]:
+            result = charger.set_led_brightness(level)
+            self.assertFalse(result)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -22,6 +22,26 @@ Example usage:
 
 from .charger import DuosidaCharger, ChargerStatus
 from .discovery import discover_chargers
+from .exceptions import (
+    DuosidaError,
+    ConnectionError,
+    CommunicationError,
+    CommandError,
+    DiscoveryError,
+    ValidationError,
+    TimeoutError,
+)
 
 __version__ = "0.1.0"
-__all__ = ["DuosidaCharger", "ChargerStatus", "discover_chargers"]
+__all__ = [
+    "DuosidaCharger",
+    "ChargerStatus",
+    "discover_chargers",
+    "DuosidaError",
+    "ConnectionError",
+    "CommunicationError",
+    "CommandError",
+    "DiscoveryError",
+    "ValidationError",
+    "TimeoutError",
+]

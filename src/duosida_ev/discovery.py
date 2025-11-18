@@ -6,7 +6,10 @@ import socket
 import time
 import binascii
 import re
+import logging
 from typing import List, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _get_device_id_via_tcp(ip: str, port: int = 9988, timeout: float = 3.0) -> Optional[str]:
@@ -17,6 +20,7 @@ def _get_device_id_via_tcp(ip: str, port: int = 9988, timeout: float = 3.0) -> O
     via TCP after the initial handshake.
     """
     try:
+        logger.debug(f"Retrieving device ID from {ip}:{port}")
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
         sock.connect((ip, port))
