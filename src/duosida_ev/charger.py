@@ -6,8 +6,19 @@ import socket
 import struct
 import time
 import binascii
+import logging
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
+
+from .exceptions import (
+    ConnectionError as ChargerConnectionError,
+    CommunicationError,
+    CommandError,
+    ValidationError,
+    TimeoutError as ChargerTimeoutError,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class ProtobufEncoder:
@@ -149,6 +160,58 @@ class ChargerStatus:
         }
         return status_names.get(int(self.conn_status), f"Unknown ({self.conn_status})")
 
+    @property
+    def cp_voltage(self) -> float:
+        """Get Control Pilot voltage from conn_status (IEC 61851-1)"""
+        # CP signal states based on voltage levels
+        cp_voltages = {
+            0: 12.0,  # State A: No vehicle connected
+            1: 9.0,   # State B: Vehicle connected, not ready
+            2: 6.0,   # State C: Charging
+            3: 6.0,   # Cooling (still in charging state)
+            4: 9.0,   # SuspendedEV (vehicle connected but paused)
+            5: 9.0,   # Finished (vehicle still connected)
+            6: 12.0,  # Holiday mode
+        }
+        return cp_voltages.get(int(self.conn_status), 0.0)
+
+    @property
+    def cp_state(self) -> str:
+        """Get Control Pilot state description (IEC 61851-1)"""
+        cp_states = {
+            0: "No vehicle connected",
+            1: "Vehicle connected, not ready",
+            2: "Charging",
+            3: "Charging (cooling)",
+            4: "Vehicle connected, suspended",
+            5: "Vehicle connected, finished",
+            6: "Holiday mode",
+        }
+        return cp_states.get(int(self.conn_status), "Unknown")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert status to dictionary for JSON export"""
+        return {
+            "device_id": self.device_id,
+            "model": self.model,
+            "firmware": self.firmware,
+            "state": self.state,
+            "conn_status": self.conn_status,
+            "cp_voltage": self.cp_voltage,
+            "voltage": self.voltage,
+            "voltage2": self.voltage2,
+            "voltage3": self.voltage3,
+            "current": self.current,
+            "current2": self.current2,
+            "current3": self.current3,
+            "power": self.power,
+            "temperature_station": self.temperature_station,
+            "temperature_internal": self.temperature_internal,
+            "today_consumption": self.today_consumption,
+            "session_energy": self.session_energy,
+            "timestamp": self.timestamp
+        }
+
     def __str__(self) -> str:
         status_str = self.state
         voltage = float(self.voltage) if self.voltage else 0.0
@@ -162,7 +225,8 @@ class ChargerStatus:
 
         result = f"""Charger Status:
   Device ID: {self.device_id}
-  Status: {status_str}"""
+  Status: {status_str}
+  CP Voltage: {self.cp_voltage:.0f}V"""
 
         if self.model or self.firmware:
             if self.model:
@@ -175,9 +239,6 @@ class ChargerStatus:
   ELECTRICAL:
     Voltage (L1): {voltage:.1f}V"""
 
-        if voltage2 > 0.01:
-            result += f"""
-    Voltage (Field 3): {voltage2:.1f}V  [unknown field]"""
         if voltage3 > 0.01:
             result += f"""
     Voltage (L3): {voltage3:.1f}V"""
@@ -185,9 +246,6 @@ class ChargerStatus:
         result += f"""
     Current (L1): {current:.2f}A"""
 
-        if current2 > 0.01:
-            result += f"""
-    Current (Avg/Historical): {current2:.2f}A"""
         if current3 > 0.01:
             result += f"""
     Current (L3): {current3:.2f}A"""
@@ -218,7 +276,7 @@ class ChargerStatus:
                 from datetime import datetime
                 dt = datetime.fromtimestamp(self.timestamp)
                 result += f"""
-    Reading Time: {dt.strftime('%Y-%m-%d %H:%M:%S')}"""
+    Session Start: {dt.strftime('%Y-%m-%d %H:%M:%S')}"""
 
         if self.acc_energy and float(self.acc_energy) > 0:
             result += f"""
@@ -248,13 +306,17 @@ class DuosidaCharger:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(self.timeout)
             self.sock.connect((self.host, self.port))
-            if self.debug:
-                print(f"[+] Connected to {self.host}:{self.port}")
+            logger.info(f"Connected to {self.host}:{self.port}")
             self._send_handshake()
             return True
+        except socket.timeout as e:
+            logger.error(f"Connection timed out: {e}")
+            return False
+        except socket.error as e:
+            logger.error(f"Connection failed: {e}")
+            return False
         except Exception as e:
-            if self.debug:
-                print(f"[-] Connection failed: {e}")
+            logger.error(f"Unexpected error connecting: {e}")
             return False
 
     def disconnect(self):
@@ -262,8 +324,7 @@ class DuosidaCharger:
         if self.sock:
             self.sock.close()
             self.sock = None
-            if self.debug:
-                print("[+] Disconnected")
+            logger.info("Disconnected")
 
     def _send_handshake(self):
         """Send initial handshake messages"""
@@ -390,7 +451,7 @@ class DuosidaCharger:
                 max_current=float(self._cached_max_current) if self._cached_max_current else 0.0,
                 acc_energy=0.0,
                 today_consumption=get_float(20) / 1000.0,
-                session_energy=get_float(9),
+                session_energy=get_float(4),
                 timestamp=get_int(18),
                 conn_status=get_int(17),
                 device_id=device_id if isinstance(device_id, str) else "",
@@ -404,8 +465,7 @@ class DuosidaCharger:
             return status
 
         except Exception as e:
-            if self.debug:
-                print(f"[-] Error getting status: {e}")
+            logger.error(f"Error getting status: {e}")
             raise
 
     def set_max_current(self, amps: int) -> bool:
@@ -438,6 +498,192 @@ class DuosidaCharger:
         """Get the last set max current value (cached)"""
         return self._cached_max_current
 
+    def set_config(self, key: str, value: str) -> bool:
+        """Set a configuration value on the charger
+
+        Args:
+            key: Configuration key name (e.g., 'VendorMaxWorkCurrent')
+            value: Configuration value as string
+
+        Returns:
+            True if command was sent successfully
+        """
+        try:
+            command_data = (
+                ProtobufEncoder.encode_string(1, key) +
+                ProtobufEncoder.encode_string(2, value)
+            )
+
+            msg = (
+                ProtobufEncoder.encode_embedded_message(10, command_data) +
+                ProtobufEncoder.encode_string(100, self.device_id) +
+                ProtobufEncoder.encode_varint_field(101, self.sequence)
+            )
+
+            self._send_raw(msg)
+            self.sequence += 1
+            time.sleep(0.5)
+            return True
+
+        except Exception as e:
+            logger.error(f"Error setting config: {e}")
+            return False
+
+    def set_connection_timeout(self, seconds: int) -> bool:
+        """Set connection timeout (30-900 seconds)
+
+        Args:
+            seconds: Timeout value in seconds
+
+        Returns:
+            True if command was sent successfully
+        """
+        if not 30 <= seconds <= 900:
+            logger.warning("Connection timeout must be between 30 and 900 seconds")
+            return False
+
+        return self.set_config("ConnectionTimeOut", str(seconds))
+
+    def set_max_temperature(self, celsius: int) -> bool:
+        """Set maximum working temperature (85-95°C)
+
+        Args:
+            celsius: Temperature in Celsius
+
+        Returns:
+            True if command was sent successfully
+        """
+        if not 85 <= celsius <= 95:
+            logger.warning("Max temperature must be between 85 and 95°C")
+            return False
+
+        return self.set_config("VendorMaxWorkTemperature", str(celsius))
+
+    def set_max_voltage(self, voltage: int) -> bool:
+        """Set maximum working voltage (265-290V)
+
+        Args:
+            voltage: Voltage in volts
+
+        Returns:
+            True if command was sent successfully
+        """
+        if not 265 <= voltage <= 290:
+            logger.warning("Max voltage must be between 265 and 290V")
+            return False
+
+        return self.set_config("VendorMaxWorkVoltage", str(voltage))
+
+    def set_min_voltage(self, voltage: int) -> bool:
+        """Set minimum working voltage (70-110V)
+
+        Args:
+            voltage: Voltage in volts
+
+        Returns:
+            True if command was sent successfully
+        """
+        if not 70 <= voltage <= 110:
+            logger.warning("Min voltage must be between 70 and 110V")
+            return False
+
+        return self.set_config("VendorMinWorkVoltage", str(voltage))
+
+    def set_direct_work_mode(self, enabled: bool) -> bool:
+        """Set direct work mode (plug and charge)
+
+        When enabled, charging starts automatically when vehicle is plugged in.
+        When disabled, authentication is required before charging.
+
+        Args:
+            enabled: True to enable, False to disable
+
+        Returns:
+            True if command was sent successfully
+        """
+        return self.set_config("VendorDirectWorkMode", "1" if enabled else "0")
+
+    def set_led_brightness(self, level: int) -> bool:
+        """Set LED/screen brightness level
+
+        Args:
+            level: Brightness level (0=off, 1=low, 3=high)
+
+        Returns:
+            True if command was sent successfully
+        """
+        if level not in (0, 1, 3):
+            logger.warning("LED brightness must be 0, 1, or 3")
+            return False
+
+        return self.set_config("VendorLEDStrength", str(level))
+
+    def start_charging(self) -> bool:
+        """Start a charging session
+
+        Returns:
+            True if command was sent successfully
+        """
+        try:
+            # Build inner message: field 1 = "XC_Remote_Tag"
+            inner_data = ProtobufEncoder.encode_string(1, "XC_Remote_Tag")
+
+            # Build command: field 1 = 1, field 2 = inner message
+            command_data = (
+                ProtobufEncoder.encode_varint_field(1, 1) +
+                ProtobufEncoder.encode_embedded_message(2, inner_data)
+            )
+
+            # Field 34 contains the start command
+            msg = (
+                ProtobufEncoder.encode_embedded_message(34, command_data) +
+                ProtobufEncoder.encode_string(100, self.device_id) +
+                ProtobufEncoder.encode_varint_field(101, self.sequence)
+            )
+
+            self._send_raw(msg)
+            self.sequence += 1
+            time.sleep(0.5)
+            return True
+
+        except Exception as e:
+            logger.error(f"Error starting charge: {e}")
+            return False
+
+    def stop_charging(self, session_id: Optional[int] = None) -> bool:
+        """Stop the current charging session
+
+        Args:
+            session_id: Optional session identifier. If not provided,
+                        uses current timestamp as session ID.
+
+        Returns:
+            True if command was sent successfully
+        """
+        try:
+            # Use timestamp as session ID if not provided
+            if session_id is None:
+                session_id = int(time.time() * 1000) % 0xFFFFFFFF
+
+            # Build command: field 1 = session_id
+            command_data = ProtobufEncoder.encode_varint_field(1, session_id)
+
+            # Field 36 contains the stop command
+            msg = (
+                ProtobufEncoder.encode_embedded_message(36, command_data) +
+                ProtobufEncoder.encode_string(100, self.device_id) +
+                ProtobufEncoder.encode_varint_field(101, self.sequence)
+            )
+
+            self._send_raw(msg)
+            self.sequence += 1
+            time.sleep(0.5)
+            return True
+
+        except Exception as e:
+            logger.error(f"Error stopping charge: {e}")
+            return False
+
     def monitor(self, interval: float = 2.0, duration: Optional[float] = None,
                 callback=None):
         """Monitor charger status continuously
@@ -464,8 +710,7 @@ class DuosidaCharger:
                             print(status)
                             print("="*60)
                 except Exception as e:
-                    if self.debug:
-                        print(f"\n[!] Error: {e}")
+                    logger.warning(f"Error during monitoring: {e}")
 
                 time.sleep(interval)
 
