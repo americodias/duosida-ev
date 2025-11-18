@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "duosida-ev"
+version = "0.1.0"
+description = "Python library for direct TCP control of Duosida EV wall chargers"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Americo Dias", email = "americo.dias@gmail.com"}
+]
+keywords = ["duosida", "ev", "charger", "electric-vehicle", "smart-home", "iot"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Home Automation",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.6"
+dependencies = []
+
+[project.urls]
+Homepage = "https://git.dias.pt/personal/duosida-ev"
+Repository = "https://git.dias.pt/personal/duosida-ev"
+
+[project.scripts]
+duosida = "duosida_ev.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/duosida_ev"]
