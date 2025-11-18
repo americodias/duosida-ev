@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2024-11-19
+
+### Added
+
+- **Actual CP Voltage Reading**: Now reads real Control Pilot voltage from Field 9 instead of deriving from status
+- **Manufacturer Field**: Extract manufacturer info from device data (e.g., "UCHEN")
+- **Improved Device Info Parsing**: Better extraction of model, manufacturer, and firmware from device response
+
+### Changed
+
+- **Reordered ChargerStatus fields**: conn_status first, device_id/model/manufacturer/firmware last
+- **Removed cp_state property**: Redundant with state property
+- **Removed unused fields**: max_current, today_consumption, acc_energy
+- **Set L2/L3 readings to 0**: voltage_l2, voltage_l3, current_l2, current_l3 always return 0 (field mappings uncertain)
+
+### Fixed
+
+- **Firmware parsing**: Fixed trailing control characters in firmware string
+- **Model extraction**: Improved parsing of model name from device info
+
+### Technical Details
+
+- 35 unit tests (4 new)
+- cp_voltage now uses actual Field 9 reading with fallback to derived value
+
 ## [0.1.0] - 2024-11-18
 
 ### Added
@@ -35,4 +60,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python 3.6+ compatible
 - No external dependencies (stdlib only)
 
-[0.1.0]: https://github.com/your-repo/duosida-ev/releases/tag/v0.1.0
+[0.1.2]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.2
+[0.1.0]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.0

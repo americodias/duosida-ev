@@ -32,8 +32,9 @@ requires-python = ">=3.6"
 dependencies = []
 
 [project.urls]
-Homepage = "https://git.dias.pt/personal/duosida-ev"
-Repository = "https://git.dias.pt/personal/duosida-ev"
+Homepage = "https://github.com/americodias/duosida-ev"
+Repository = "https://github.com/americodias/duosida-ev"
+Issues = "https://github.com/americodias/duosida-ev/issues"
 
 [project.scripts]
 duosida = "duosida_ev.cli:main"
