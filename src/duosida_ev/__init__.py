@@ -13,7 +13,7 @@ Example usage:
         print(f"Found: {device['ip']}")
 
     # Connect and get status
-    charger = DuosidaCharger(host="192.168.20.95", device_id="0310107112122360374")
+    charger = DuosidaCharger(host="192.168.1.100", device_id="YOUR_DEVICE_ID")
     charger.connect()
     status = charger.get_status()
     print(status)
@@ -32,7 +32,7 @@ from .exceptions import (
     TimeoutError,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = [
     "DuosidaCharger",
     "ChargerStatus",

@@ -21,7 +21,7 @@ pip install duosida-ev
 Or install from source:
 
 ```bash
-git clone https://git.dias.pt/personal/duosida-ev.git
+git clone https://github.com/americodias/duosida-ev.git
 cd duosida-ev
 pip install -e .
 ```
@@ -46,8 +46,8 @@ for device in devices:
 from duosida_ev import DuosidaCharger
 
 charger = DuosidaCharger(
-    host="192.168.20.95",
-    device_id="0310107112122360374"
+    host="192.168.1.100",
+    device_id="YOUR_DEVICE_ID"
 )
 
 charger.connect()
@@ -146,30 +146,30 @@ charger.disconnect()
 duosida discover
 
 # Get charger status
-duosida status --host 192.168.20.95 --device-id YOUR_DEVICE_ID
+duosida status --host 192.168.1.100 --device-id YOUR_DEVICE_ID
 
 # Get status in JSON format
-duosida status --host 192.168.20.95 --device-id YOUR_DEVICE_ID --json
+duosida status --host 192.168.1.100 --device-id YOUR_DEVICE_ID --json
 
 # Set maximum current
-duosida set-current --host 192.168.20.95 --device-id YOUR_DEVICE_ID 16
+duosida set-current --host 192.168.1.100 --device-id YOUR_DEVICE_ID 16
 
 # Start charging
-duosida start --host 192.168.20.95 --device-id YOUR_DEVICE_ID
+duosida start --host 192.168.1.100 --device-id YOUR_DEVICE_ID
 
 # Stop charging
-duosida stop --host 192.168.20.95 --device-id YOUR_DEVICE_ID
+duosida stop --host 192.168.1.100 --device-id YOUR_DEVICE_ID
 
 # Monitor continuously
-duosida monitor --host 192.168.20.95 --device-id YOUR_DEVICE_ID
+duosida monitor --host 192.168.1.100 --device-id YOUR_DEVICE_ID
 
 # Configuration commands (host only - device ID auto-discovered)
-duosida set-timeout --host 192.168.20.95 120          # 30-900 seconds
-duosida set-max-temp --host 192.168.20.95 90          # 85-95°C
-duosida set-max-voltage --host 192.168.20.95 280      # 265-290V
-duosida set-min-voltage --host 192.168.20.95 90       # 70-110V
-duosida set-direct-mode --host 192.168.20.95 on       # on/off
-duosida set-led-brightness --host 192.168.20.95 3     # 0=off, 1=low, 3=high
+duosida set-timeout --host 192.168.1.100 120          # 30-900 seconds
+duosida set-max-temp --host 192.168.1.100 90          # 85-95°C
+duosida set-max-voltage --host 192.168.1.100 280      # 265-290V
+duosida set-min-voltage --host 192.168.1.100 90       # 70-110V
+duosida set-direct-mode --host 192.168.1.100 on       # on/off
+duosida set-led-brightness --host 192.168.1.100 3     # 0=off, 1=low, 3=high
 ```
 
 ## Telemetry Fields
@@ -258,19 +258,19 @@ ssh root@<access-point-ip>
 
 # Capture on the wireless interface (ra2) for your IoT VLAN
 tcpdump -i ra2 -w /tmp/charger_capture.pcap \
-  'host 192.168.20.95 and host 192.168.20.124 and tcp port 9988'
+  'host 192.168.1.100 and host 192.168.1.50 and tcp port 9988'
 ```
 
 Options:
 - `-i ra2` - Interface for 2.4GHz/5GHz AP (wireless)
-- `host 192.168.20.95` - Charger IP
-- `host 192.168.20.124` - Phone IP (update as needed)
+- `host 192.168.1.100` - Charger IP
+- `host 192.168.1.50` - Phone IP (update as needed)
 
 Alternative - capture everything for 30 seconds:
 
 ```bash
 timeout 30 tcpdump -i ra2 -w /tmp/charger_full.pcap \
-  'host 192.168.20.95 and tcp port 9988'
+  'host 192.168.1.100 and tcp port 9988'
 ```
 
 Download the capture from the AP:
