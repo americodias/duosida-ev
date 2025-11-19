@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "duosida-ev"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python library for direct TCP control of Duosida EV wall chargers"
 readme = "README.md"
 license = {text = "MIT"}

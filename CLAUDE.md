@@ -4,19 +4,27 @@
 
 Python library for direct TCP communication with Duosida EV wall chargers, bypassing the cloud API. Provides real-time telemetry and control via the charger's native protobuf protocol.
 
-## Key Files
+## Package Structure
 
-- **duosida_direct.py** - Main library with `DuosidaCharger` class
-- **quick_test.py** - Simple test script for single readings
+- **src/duosida_ev/charger.py** - Main `DuosidaCharger` class
+- **src/duosida_ev/cli.py** - Command-line interface
+- **src/duosida_ev/discovery.py** - Network discovery
+- **src/duosida_ev/exceptions.py** - Custom exceptions
 
 ## Usage
 
 ```python
-from duosida_direct import DuosidaCharger
+from duosida_ev import DuosidaCharger, discover_chargers
 
+# Discover chargers
+devices = discover_chargers()
+for device in devices:
+    print(f"Found: {device['ip']} - {device['device_id']}")
+
+# Connect and get status
 charger = DuosidaCharger(
-    host="192.168.20.95",
-    device_id="0310107112122360374"
+    host="192.168.1.100",
+    device_id="YOUR_DEVICE_ID"
 )
 
 charger.connect()
@@ -28,14 +36,29 @@ charger.disconnect()
 ### CLI Commands
 
 ```bash
-# Get status
-python3 duosida_direct.py --host 192.168.20.95 --device-id YOUR_DEVICE_ID status
+# Auto-discover and get status
+duosida status
 
-# Monitor continuously
-python3 duosida_direct.py --host 192.168.20.95 --device-id YOUR_DEVICE_ID monitor
+# Get status with JSON output
+duosida status --json
 
 # Set max current (6-32A)
-python3 duosida_direct.py --host 192.168.20.95 --device-id YOUR_DEVICE_ID set-current 16
+duosida set-current 16
+
+# Start/stop charging
+duosida start
+duosida stop
+
+# Monitor continuously
+duosida monitor
+
+# Configuration settings
+duosida set-timeout 120          # 30-900 seconds
+duosida set-max-temp 90          # 85-95°C
+duosida set-max-voltage 280      # 265-290V
+duosida set-min-voltage 90       # 70-110V
+duosida set-direct-mode on       # on/off
+duosida set-led-brightness 3     # 0=off, 1=low, 3=high
 ```
 
 ## Telemetry Fields
@@ -68,7 +91,7 @@ Based on [official HA integration](https://github.com/jello1974/duosidaEV-home-a
 ## Protocol Details
 
 - **Port**: 9988 (TCP)
-- **Handshake**: `7a0408006a00`
+- **Discovery**: UDP broadcast on port 48890/48899
 - **Message format**: Protobuf with nested fields
 - **Telemetry path**: Field 16 → Field 10 (DataVendorStatusReq)
 
@@ -79,24 +102,19 @@ Based on [official HA integration](https://github.com/jello1974/duosidaEV-home-a
 
 ## Development Environment
 
-This project uses a local virtual environment managed with `uv`:
-
 ```bash
 # Activate the virtual environment
 source .venv/bin/activate
 
-# Run scripts
-python3 duosida_direct.py --help
-python3 duosida_network_discovery.py --help
+# Run tests
+python -m pytest tests/
 
-# Install new dependencies (if needed)
-uv pip install <package>
+# Install in development mode
+pip install -e .
 ```
-
-Always use the local venv when running or testing scripts.
 
 ## Notes
 
-- Device ID can be found in the official Duosida app or Home Assistant
-- Max current setting is write-only (cached locally after set)
-- Charger sends mix of DataVendorStatusReq (telemetry) and DataContinueReq (historical) - library handles this automatically
+- Device ID can be found via discovery or in the official Duosida app
+- CLI auto-discovers charger if --host/--device-id not provided
+- Use -v/--verbose for debug output

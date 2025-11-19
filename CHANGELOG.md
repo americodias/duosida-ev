@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 35 unit tests (4 new)
 - cp_voltage now uses actual Field 9 reading with fallback to derived value
 
+## [0.1.1] - 2024-11-19
+
+### Fixed
+
+- Updated README.md to use GitHub repository URL instead of git.dias.pt
+
 ## [0.1.0] - 2024-11-18
 
 ### Added
@@ -61,4 +67,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No external dependencies (stdlib only)
 
 [0.1.2]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.2
+[0.1.1]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.1
 [0.1.0]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.0
