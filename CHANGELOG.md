@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Removed cp_state property**: Redundant with state property
 - **Removed unused fields**: max_current, today_consumption, acc_energy
 - **Set L2/L3 readings to 0**: voltage_l2, voltage_l3, current_l2, current_l3 always return 0 (field mappings uncertain)
+- Updated CLI to display manufacturer in status output
 
 ### Fixed
 

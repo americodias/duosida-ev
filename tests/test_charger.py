@@ -67,12 +67,56 @@ class TestChargerStatus(unittest.TestCase):
         status = ChargerStatus(
             voltage=230.0,
             current=16.0,
-            today_consumption=10.5,
             session_energy=5.2
         )
         output = str(status)
-        self.assertIn("10.50 kWh", output)
         self.assertIn("5.20 kWh", output)
+
+    def test_cp_voltage_from_raw(self):
+        """Test CP voltage uses raw value when available"""
+        status = ChargerStatus(conn_status=2, cp_voltage_raw=5.9)
+        self.assertAlmostEqual(status.cp_voltage, 5.9, places=1)
+
+    def test_cp_voltage_derived(self):
+        """Test CP voltage derived from conn_status when raw not available"""
+        status = ChargerStatus(conn_status=2, cp_voltage_raw=0.0)
+        self.assertEqual(status.cp_voltage, 6.0)  # State C = 6V
+
+    def test_to_dict_fields(self):
+        """Test to_dict returns all expected fields"""
+        status = ChargerStatus(
+            conn_status=2,
+            voltage=230.0,
+            current=16.0,
+            cp_voltage_raw=5.9,
+            device_id="TEST123",
+            model="DUOSIDA Test",
+            manufacturer="UCHEN",
+            firmware="V1.0"
+        )
+        result = status.to_dict()
+
+        # Check all required fields exist
+        expected_fields = [
+            'conn_status', 'cp_voltage', 'state', 'voltage', 'voltage_l2',
+            'voltage_l3', 'current', 'current_l2', 'current_l3', 'power',
+            'temperature_station', 'session_energy', 'session_time',
+            'device_id', 'model', 'manufacturer', 'firmware'
+        ]
+        for field in expected_fields:
+            self.assertIn(field, result)
+
+        # Check specific values
+        self.assertEqual(result['conn_status'], 2)
+        self.assertEqual(result['device_id'], "TEST123")
+        self.assertEqual(result['model'], "DUOSIDA Test")
+        self.assertEqual(result['manufacturer'], "UCHEN")
+        self.assertEqual(result['firmware'], "V1.0")
+
+    def test_manufacturer_field(self):
+        """Test manufacturer field"""
+        status = ChargerStatus(manufacturer="UCHEN")
+        self.assertEqual(status.manufacturer, "UCHEN")
 
 
 class TestDuosidaCharger(unittest.TestCase):
@@ -330,6 +374,20 @@ class TestDuosidaCharger(unittest.TestCase):
         for level in [2, 4, 50, 100]:
             result = charger.set_led_brightness(level)
             self.assertFalse(result)
+
+    def test_set_stop_on_disconnect(self):
+        """Test stop on disconnect settings"""
+        charger = DuosidaCharger(host="192.168.1.100", device_id="TEST123")
+        charger.sock = Mock()
+        charger.sock.sendall = Mock()
+
+        # Test enable
+        result = charger.set_stop_on_disconnect(True)
+        self.assertTrue(result)
+
+        # Test disable
+        result = charger.set_stop_on_disconnect(False)
+        self.assertTrue(result)
 
 
 if __name__ == '__main__':

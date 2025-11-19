@@ -176,13 +176,23 @@ duosida set-led-brightness --host 192.168.1.100 3     # 0=off, 1=low, 3=high
 
 | Field | Description |
 |-------|-------------|
-| `voltage` | Line voltage (V) |
-| `current` | Charging current (A) |
+| `conn_status` | Connection status code (0-6) |
+| `cp_voltage` | Control Pilot voltage (V) |
+| `state` | Human-readable status (Available, Charging, Finished, etc.) |
+| `voltage` | Line voltage L1 (V) |
+| `voltage_l2` | Line voltage L2 (V) |
+| `voltage_l3` | Line voltage L3 (V) |
+| `current` | Charging current L1 (A) |
+| `current_l2` | Charging current L2 (A) |
+| `current_l3` | Charging current L3 (A) |
 | `power` | Power consumption (W) |
 | `temperature_station` | Station temperature (°C) |
-| `state` | Connection status (Available, Charging, Finished, etc.) |
-| `today_consumption` | Daily energy consumption (kWh) |
 | `session_energy` | Current session energy (kWh) |
+| `session_time` | Session duration (minutes) |
+| `device_id` | Device identifier |
+| `model` | Device model |
+| `manufacturer` | Manufacturer |
+| `firmware` | Firmware version |
 
 ## Status Codes
 
@@ -280,19 +290,6 @@ scp root@<access-point-ip>:/tmp/charger_capture.pcap ./charger_capture.pcap
 ```
 
 </details>
-
-## TODO
-
-Features available in the [cloud API](https://github.com/jello1974/duosidaEV-home-assistant) but not yet implemented:
-
-- [x] **Start/Stop Charging** - Remote control to start or stop charging session
-- [x] **Level Detection** - CP voltage display based on charging state (IEC 61851-1)
-- [x] **Direct Work Mode** - Toggle VendorDirectWorkMode setting (plug and charge)
-- [x] **3-Phase Support** - Read voltage/current for L2 and L3 phases (voltage2, voltage3, current2, current3)
-- [x] **Configuration Settings** - Connection timeout, max/min voltage, max temperature
-- [x] **LED Brightness** - Adjust display brightness (0=off, 1=low, 3=high)
-- [ ] **Charging Records** - Retrieve historical charging sessions
-- [ ] **Accumulated Energy** - Total lifetime energy consumption (may be cloud-only)
 
 ## License
 

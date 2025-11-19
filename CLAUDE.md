@@ -65,16 +65,22 @@ duosida set-led-brightness 3     # 0=off, 1=low, 3=high
 
 | Field | Source | Description |
 |-------|--------|-------------|
-| voltage | Field 1 | Line voltage (V) |
-| current | Field 2 | Charging current (A) |
-| current2 | Field 15 | Secondary/average current (A) |
-| temperature_station | Field 8 | Station temperature (°C) |
-| temperature_internal | Field 7 | Internal temperature (°C) |
 | conn_status | Field 17 | Connection status (0-6) |
-| today_consumption | Field 20 | Daily energy (kWh) |
-| session_energy | Field 9 | Session energy (kWh) |
-| timestamp | Field 18 | Reading timestamp |
+| cp_voltage | Field 9 | Control Pilot voltage (V) |
+| voltage | Field 1 | Line voltage L1 (V) |
+| voltage_l2 | - | Line voltage L2 (V) - not mapped yet |
+| voltage_l3 | - | Line voltage L3 (V) - not mapped yet |
+| current | Field 2 | Charging current L1 (A) |
+| current_l2 | - | Charging current L2 (A) - not mapped yet |
+| current_l3 | - | Charging current L3 (A) - not mapped yet |
 | power | Calculated | V × I (W) |
+| temperature_station | Field 8 | Station temperature (°C) |
+| session_energy | Field 4 | Session energy (kWh) |
+| session_time | Calculated | From timestamp (minutes) |
+| device_id | Field 100 | Device identifier |
+| model | Field 4.2 | Device model |
+| manufacturer | Field 4.4 | Manufacturer |
+| firmware | Field 4.5 | Firmware version |
 
 ## Status Codes
 

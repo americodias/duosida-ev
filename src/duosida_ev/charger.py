@@ -126,23 +126,33 @@ class ProtobufDecoder:
 @dataclass
 class ChargerStatus:
     """Charger status data"""
-    voltage: float = 0.0
-    voltage2: float = 0.0
-    voltage3: float = 0.0
-    current: float = 0.0
-    current2: float = 0.0
-    current3: float = 0.0
-    temperature_internal: float = 0.0
-    temperature_station: float = 0.0
-    power: float = 0.0
-    max_current: float = 0.0
-    acc_energy: float = 0.0
-    today_consumption: float = 0.0
-    session_energy: float = 0.0
-    timestamp: int = 0
+    # Connection status (first for quick access)
     conn_status: int = 0
+
+    # Electrical measurements
+    voltage: float = 0.0
+    voltage2: float = 0.0  # L2 phase
+    voltage3: float = 0.0  # L3 phase
+    current: float = 0.0
+    current2: float = 0.0  # L2 phase
+    current3: float = 0.0  # L3 phase
+    power: float = 0.0
+
+    # Temperature
+    temperature_station: float = 0.0
+    temperature_internal: float = 0.0
+
+    # Session data
+    session_energy: float = 0.0
+    timestamp: int = 0  # Session start timestamp
+
+    # Control Pilot
+    cp_voltage_raw: float = 0.0  # Field 9 - actual CP voltage reading
+
+    # Device info (last)
     device_id: str = ""
     model: str = ""
+    manufacturer: str = ""
     firmware: str = ""
 
     @property
@@ -162,8 +172,16 @@ class ChargerStatus:
 
     @property
     def cp_voltage(self) -> float:
-        """Get Control Pilot voltage from conn_status (IEC 61851-1)"""
-        # CP signal states based on voltage levels
+        """Get Control Pilot voltage (IEC 61851-1)
+
+        Returns the actual CP voltage reading from Field 9 if available,
+        otherwise derives it from conn_status.
+        """
+        # Use actual reading if available
+        if self.cp_voltage_raw > 0:
+            return self.cp_voltage_raw
+
+        # Fallback: derive from conn_status
         cp_voltages = {
             0: 12.0,  # State A: No vehicle connected
             1: 9.0,   # State B: Vehicle connected, not ready
@@ -175,50 +193,49 @@ class ChargerStatus:
         }
         return cp_voltages.get(int(self.conn_status), 0.0)
 
-    @property
-    def cp_state(self) -> str:
-        """Get Control Pilot state description (IEC 61851-1)"""
-        cp_states = {
-            0: "No vehicle connected",
-            1: "Vehicle connected, not ready",
-            2: "Charging",
-            3: "Charging (cooling)",
-            4: "Vehicle connected, suspended",
-            5: "Vehicle connected, finished",
-            6: "Holiday mode",
-        }
-        return cp_states.get(int(self.conn_status), "Unknown")
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert status to dictionary for JSON export"""
+        # Calculate session time in minutes from timestamp
+        session_time = 0
+        if self.timestamp > 0:
+            import time
+            session_time = int((time.time() - self.timestamp) / 60)
+
         return {
-            "device_id": self.device_id,
-            "model": self.model,
-            "firmware": self.firmware,
-            "state": self.state,
+            # Connection status first
             "conn_status": self.conn_status,
             "cp_voltage": self.cp_voltage,
+            "state": self.state,
+
+            # Electrical measurements
             "voltage": self.voltage,
-            "voltage2": self.voltage2,
-            "voltage3": self.voltage3,
+            "voltage_l2": self.voltage2,
+            "voltage_l3": self.voltage3,
             "current": self.current,
-            "current2": self.current2,
-            "current3": self.current3,
+            "current_l2": self.current2,
+            "current_l3": self.current3,
             "power": self.power,
+
+            # Temperature
             "temperature_station": self.temperature_station,
-            "temperature_internal": self.temperature_internal,
-            "today_consumption": self.today_consumption,
+
+            # Session data
             "session_energy": self.session_energy,
-            "timestamp": self.timestamp
+            "session_time": session_time,
+
+            # Device info last
+            "device_id": self.device_id,
+            "model": self.model,
+            "manufacturer": self.manufacturer,
+            "firmware": self.firmware,
         }
 
     def __str__(self) -> str:
         status_str = self.state
         voltage = float(self.voltage) if self.voltage else 0.0
-        voltage2 = float(self.voltage2) if self.voltage2 else 0.0
         voltage3 = float(self.voltage3) if self.voltage3 else 0.0
         current = float(self.current) if self.current else 0.0
-        current2 = float(self.current2) if self.current2 else 0.0
         current3 = float(self.current3) if self.current3 else 0.0
         power = float(self.power) if self.power else 0.0
         temp_station = float(self.temperature_station) if self.temperature_station else 0.0
@@ -228,9 +245,11 @@ class ChargerStatus:
   Status: {status_str}
   CP Voltage: {self.cp_voltage:.0f}V"""
 
-        if self.model or self.firmware:
+        if self.model or self.manufacturer or self.firmware:
             if self.model:
                 result += f"\n  Model: {self.model}"
+            if self.manufacturer:
+                result += f"\n  Manufacturer: {self.manufacturer}"
             if self.firmware:
                 result += f"\n  Firmware: {self.firmware}"
 
@@ -251,36 +270,26 @@ class ChargerStatus:
     Current (L3): {current3:.2f}A"""
 
         result += f"""
-    Power: {power:.1f}W"""
-
-        if self.max_current and float(self.max_current) > 0:
-            result += f"""
-    Max Current Limit: {float(self.max_current):.0f}A  [cached]"""
-
-        result += f"""
+    Power: {power:.1f}W
 
   TEMPERATURE:
     Station: {temp_station:.1f}°C"""
 
-        if self.today_consumption > 0.01 or self.session_energy > 0.01:
+        if self.session_energy > 0.01 or self.timestamp > 0:
             result += f"""
 
-  ENERGY:"""
-            if self.today_consumption > 0.01:
-                result += f"""
-    Today's Consumption: {self.today_consumption:.2f} kWh"""
+  SESSION:"""
             if self.session_energy > 0.01:
                 result += f"""
-    Session Energy: {self.session_energy:.2f} kWh"""
+    Energy: {self.session_energy:.2f} kWh"""
             if self.timestamp > 0:
                 from datetime import datetime
+                import time
                 dt = datetime.fromtimestamp(self.timestamp)
+                session_minutes = int((time.time() - self.timestamp) / 60)
                 result += f"""
-    Session Start: {dt.strftime('%Y-%m-%d %H:%M:%S')}"""
-
-        if self.acc_energy and float(self.acc_energy) > 0:
-            result += f"""
-  Accumulated Energy: {float(self.acc_energy):.2f}kWh"""
+    Start: {dt.strftime('%Y-%m-%d %H:%M:%S')}
+    Duration: {session_minutes} min"""
 
         return result
 
@@ -392,15 +401,49 @@ class DuosidaCharger:
             outer_fields = ProtobufDecoder.decode_message(response)
 
             model = ""
+            manufacturer = ""
             firmware = ""
-            if 4 in outer_fields and isinstance(outer_fields[4], bytes):
-                device_info = ProtobufDecoder.decode_message(outer_fields[4])
-                model_val = device_info.get(2, "")
-                model = model_val if isinstance(model_val, str) else ""
-                firmware_val = device_info.get(5, "")
-                firmware = firmware_val if isinstance(firmware_val, str) else ""
-
             device_id = outer_fields.get(100, "")
+            if isinstance(device_id, bytes):
+                device_id = device_id.decode('utf-8', errors='ignore')
+
+            # Parse device info from field 4
+            # It's a nested protobuf that may be decoded as string with embedded control chars
+            if 4 in outer_fields:
+                device_info = outer_fields[4]
+                if isinstance(device_info, bytes):
+                    device_info = device_info.decode('utf-8', errors='ignore')
+                if isinstance(device_info, str):
+                    # Parse embedded protobuf fields from the string
+                    # Format: \x12\x11MODEL\x1a\x13DEVICEID"\x05MANUFACTURER*-FIRMWARE\x00:\x00
+                    import re
+
+                    # Extract model - between first control char and device_id
+                    # Model starts after \x12\xNN
+                    if '\x12' in device_info:
+                        model_start = device_info.find('\x12') + 2  # Skip field marker and length
+                        if device_id and device_id in device_info:
+                            model_end = device_info.find(device_id)
+                            # Find the actual start after control char
+                            model_section = device_info[model_start:model_end]
+                            # Remove leading control char (field 3 marker)
+                            model = model_section.rstrip('\x1a\x13').strip()
+
+                    # Extract manufacturer and firmware after device_id
+                    if device_id and device_id in device_info:
+                        after_id = device_info.split(device_id, 1)[1]
+                        # Remove leading control chars and find manufacturer
+                        # Format: "\x05UCHEN*-FIRMWARE\x00:\x00
+                        if '*-' in after_id:
+                            # Find manufacturer between " and *
+                            parts = after_id.split('*-', 1)
+                            # Manufacturer is in parts[0], strip control chars
+                            mfr = parts[0]
+                            # Remove control characters
+                            manufacturer = ''.join(c for c in mfr if c.isprintable() and c not in '"')
+                            # Firmware is in parts[1], strip trailing nulls and control chars
+                            fw = parts[1]
+                            firmware = ''.join(c for c in fw if c.isprintable() and c != ':').strip()
 
             fields = {}
             if 16 in outer_fields and isinstance(outer_fields[16], bytes):
@@ -439,23 +482,22 @@ class DuosidaCharger:
                 return int(val) if isinstance(val, (int, float)) else default
 
             status = ChargerStatus(
+                conn_status=get_int(17),
                 voltage=get_float(1),
-                voltage2=get_float(3),
-                voltage3=0.0,
+                voltage2=0.0,  # L2 phase - not mapped yet
+                voltage3=0.0,  # L3 phase - not mapped yet
                 current=get_float(2),
-                current2=get_float(15),
-                current3=0.0,
-                temperature_internal=get_float(7),
-                temperature_station=get_float(8),
+                current2=0.0,  # L2 phase - not mapped yet
+                current3=0.0,  # L3 phase - not mapped yet
                 power=0.0,
-                max_current=float(self._cached_max_current) if self._cached_max_current else 0.0,
-                acc_energy=0.0,
-                today_consumption=get_float(20) / 1000.0,
+                temperature_station=get_float(8),
+                temperature_internal=get_float(7),
                 session_energy=get_float(4),
                 timestamp=get_int(18),
-                conn_status=get_int(17),
+                cp_voltage_raw=get_float(9),  # Actual CP voltage reading
                 device_id=device_id if isinstance(device_id, str) else "",
                 model=model if isinstance(model, str) else "",
+                manufacturer=manufacturer if isinstance(manufacturer, str) else "",
                 firmware=firmware if isinstance(firmware, str) else ""
             )
 
@@ -617,6 +659,21 @@ class DuosidaCharger:
             return False
 
         return self.set_config("VendorLEDStrength", str(level))
+
+    def set_stop_on_disconnect(self, enabled: bool) -> bool:
+        """Set whether to stop transaction when EV side disconnects
+
+        When enabled, the charging transaction automatically stops when
+        the vehicle disconnects from the cable.
+        When disabled, the transaction remains open.
+
+        Args:
+            enabled: True to enable auto-stop, False to disable
+
+        Returns:
+            True if command was sent successfully
+        """
+        return self.set_config("StopTransactionOnEVSideDisconnect", "1" if enabled else "0")
 
     def start_charging(self) -> bool:
         """Start a charging session

@@ -125,6 +125,14 @@ def main():
     led_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
     led_parser.add_argument('level', type=int, choices=[0, 1, 3], help='Brightness (0=off, 1=low, 3=high)')
 
+    # Set stop on disconnect command
+    stop_disconnect_parser = subparsers.add_parser('set-stop-on-disconnect', help='Set stop transaction on EV disconnect')
+    stop_disconnect_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
+    stop_disconnect_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
+    stop_disconnect_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
+    stop_disconnect_parser.add_argument('enabled', choices=['on', 'off', '1', '0', 'true', 'false'],
+                                        help='Enable or disable stop on disconnect')
+
     args = parser.parse_args()
 
     # Setup logging based on verbose flag and JSON output
@@ -377,6 +385,15 @@ def _execute_command(args):
                     print(f"[+] Set LED brightness to {levels.get(args.level, args.level)}")
                 else:
                     print("Failed to set brightness")
+                    return 1
+
+            elif args.command == 'set-stop-on-disconnect':
+                enabled = args.enabled.lower() in ('on', '1', 'true')
+                if charger.set_stop_on_disconnect(enabled):
+                    state = "enabled" if enabled else "disabled"
+                    print(f"[+] Stop on disconnect {state}")
+                else:
+                    print("Failed to set stop on disconnect")
                     return 1
 
         finally:
