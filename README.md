@@ -69,6 +69,8 @@ charger.disconnect()
 
 ### Configure Charger Settings
 
+**Note:** All configuration methods are **write-only**. The charger does not return configuration values in its status response. You must track configuration settings externally if needed.
+
 ```python
 charger.connect()
 
@@ -88,6 +90,9 @@ charger.set_direct_work_mode(False)  # Disable
 
 # LED brightness (0=off, 1=low, 3=high)
 charger.set_led_brightness(3)
+
+# Stop on EV disconnect
+charger.set_stop_on_disconnect(True)  # Enable auto-stop
 
 # Generic config (any key/value)
 charger.set_config("VendorMaxWorkCurrent", "16")

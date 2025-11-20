@@ -2,6 +2,12 @@
 
 This document explains the configuration settings available on Duosida EV chargers.
 
+## Important Note
+
+**All configuration settings are write-only.** The charger does not return configuration values via the TCP protocol. When you use methods like `set_max_current()`, `set_connection_timeout()`, or `set_direct_work_mode()`, the settings are sent to the charger but cannot be read back.
+
+If you need to track configuration state, you must maintain it in your application or external storage.
+
 ## Direct Work Mode (VendorDirectWorkMode)
 
 **Direct Work Mode**, also known as "Plug and charge mode" or "Plug Then Charge Mode," controls whether your charger requires authentication before starting a charging session.

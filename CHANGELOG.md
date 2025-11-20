@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2025-11-20
+
+### Removed
+
+- **Removed get_max_current() method**: The charger does not return configuration values, so caching and getting config is misleading
+- **Removed _cached_max_current**: No longer cache max current setting since charger doesn't report it back
+
+### Documentation
+
+- **Clarified configuration behavior**: All configuration settings are write-only. The charger does not return configuration values via the status protocol.
+- Updated README.md and SETTINGS.md to note that configuration methods only write values and cannot read them back
+
+### Technical Details
+
+- Configuration methods (set_max_current, set_connection_timeout, etc.) remain write-only
+- Use get_status() for telemetry data (voltage, current, power, temperature, etc.)
+- Configuration settings must be tracked externally if needed
+
 ## [0.1.2] - 2024-11-19
 
 ### Added
@@ -67,6 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python 3.6+ compatible
 - No external dependencies (stdlib only)
 
+[0.1.3]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.3
 [0.1.2]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.2
 [0.1.1]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.1
 [0.1.0]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.0

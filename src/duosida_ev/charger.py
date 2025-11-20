@@ -305,7 +305,6 @@ class DuosidaCharger:
         self.timeout = timeout
         self.sock: Optional[socket.socket] = None
         self.sequence = 2
-        self._cached_max_current: Optional[int] = None
         self._last_good_status: Optional[ChargerStatus] = None
         self.debug = debug
 
@@ -529,16 +528,11 @@ class DuosidaCharger:
 
             self._send_raw(msg)
             self.sequence += 1
-            self._cached_max_current = amps
             time.sleep(0.5)
             return True
 
         except Exception:
             return False
-
-    def get_max_current(self) -> Optional[int]:
-        """Get the last set max current value (cached)"""
-        return self._cached_max_current
 
     def set_config(self, key: str, value: str) -> bool:
         """Set a configuration value on the charger
