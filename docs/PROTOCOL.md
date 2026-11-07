@@ -139,6 +139,12 @@ charger's `BootNotification.req` carries the id just below its answer to the
 trigger (#134224369 after #134224370), so the client uses that id (*whether
 this ends the stuck state is unverified*).
 
+Live, the same holds: when the charger recovered, its `BootNotification.req`
+came 11 ms after the trigger's answer, with the id just below it. While it
+was stuck, the ids of its answers to the trigger grew by only 16 to 20 every
+10 minutes, against about 50 a minute while it pushes status. So it was not
+just withholding its messages from us: it generated almost none.
+
 ## Keep-alive and acknowledgements
 
 The app sends `TriggerMessage(requestedMessage = 3, Heartbeat)` every 5 s; the
