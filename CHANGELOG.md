@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-07
+
+### Changed
+
+- `get_configuration()` waits up to 7 s by default (or the client's `timeout`
+  if longer), resending every `retry_interval`: 4 sends instead of 3.
+  Commands keep the shorter `timeout`. On one installation, 44 pulls got 33
+  answers. 3 of those came 5-6 s after the first send, and the 5 s timeout
+  had discarded them. `duosida get-config` uses the new default.
+
+### Added
+
+- Debug logging that explains what the charger did:
+  - the answer to the handshake's `TriggerMessage(BootNotification)`, also in
+    the "no BootNotification" warning;
+  - answers that arrive after their request timed out, and repeated answers,
+    with the delay since the request was sent;
+  - keep-alive sends;
+  - the close sequence: FIN sent, whether the charger closed its side within
+    the cap, closed.
+
 ## [0.2.0] - 2026-11-07
 
 A rewrite: async, and built on the finding that the charger speaks OCPP 1.6
@@ -166,6 +187,7 @@ changes throughout; see "Migrating from 0.1" in the README.
 - Python 3.6+ compatible
 - No external dependencies (stdlib only)
 
+[0.2.1]: https://github.com/americodias/duosida-ev/releases/tag/v0.2.1
 [0.2.0]: https://github.com/americodias/duosida-ev/releases/tag/v0.2.0
 [0.1.3]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.3
 [0.1.2]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.2

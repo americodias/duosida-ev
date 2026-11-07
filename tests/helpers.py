@@ -52,6 +52,12 @@ class FakeCharger:
         self.closures: list[str] = []
         #: Keep sending for a moment after the client's FIN, as the charger does.
         self.linger = False
+        #: Answer the client's FIN with ours. The real charger did not, in the
+        #: sessions observed.
+        self.close_on_eof = True
+        #: The ``TriggerMessage.conf`` that answers the handshake.
+        self.trigger_conf = MESSAGES["trigger_conf"]
+        self._released = asyncio.Event()
         self.answers: dict[int, Answer] = {
             Action.CHANGE_CONFIGURATION.request: lambda f: status_body(0),
             Action.REMOTE_START_TRANSACTION.request: lambda f: status_body(0),
@@ -94,6 +100,8 @@ class FakeCharger:
                     self._react(received)
                 await writer.drain()
             outcome = "eof"
+            if not self.close_on_eof:
+                await self._released.wait()
             if self.linger:
                 try:
                     for _ in range(3):
@@ -110,7 +118,7 @@ class FakeCharger:
 
     def _react(self, received: Frame) -> None:
         if received.field == Action.TRIGGER_MESSAGE.request and received.message_id == 0:
-            self.push(MESSAGES["trigger_conf"])
+            self.push(self.trigger_conf)
             if self.send_boot:
                 self.push(MESSAGES["boot_notification"])
                 for raw in self.after_boot:
@@ -138,6 +146,7 @@ class FakeCharger:
 
     async def drop(self) -> None:
         """Close the current client connection."""
+        self._released.set()
         writer, self._writer = self._writer, None
         if writer is not None:
             writer.close()

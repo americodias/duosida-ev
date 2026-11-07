@@ -88,6 +88,10 @@ class TriggerTarget(IntEnum):
     HEARTBEAT = 3
 
 
+#: ``TriggerMessage.conf`` status, in OCPP 1.6 order. Only 0 has been seen.
+TRIGGER_STATUS_NAMES = {0: "Accepted", 1: "Rejected", 2: "NotImplemented"}
+
+
 class DataMessage:
     """``DataTransfer.messageId`` values and the field holding their data.
 

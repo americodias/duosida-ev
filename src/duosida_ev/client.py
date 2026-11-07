@@ -40,6 +40,13 @@ _MAX_MESSAGE_ID = 0x07FFFFFF
 _REMOTE_STATUS_NAMES = {0: "Accepted", 1: "Rejected"}
 #: Seconds to wait for the charger's FIN after ours.
 CLOSE_TIMEOUT = 3.0
+#: Default seconds for :meth:`DuosidaClient.get_configuration`. Live, every
+#: answer came within 2.2 s of one of the sends and at most 6.2 s after the
+#: first; with resends every 2 s this is 4 sends (0, 2, 4, 6 s). More resends
+#: of an ignored pull were never tried on a real charger.
+CONFIGURATION_TIMEOUT = 7.0
+#: How many finished requests to remember, to explain answers that come late.
+_FINISHED_REQUESTS = 64
 
 
 def _now() -> int:
@@ -116,6 +123,9 @@ class DuosidaClient:
         self._next_message_id = 1
         self._last_rx = 0.0
         self._heard_id = False  # the charger sent its id on the current connection
+        self._trigger_status: int | None = None  # answer to the handshake's trigger
+        # message id -> (action, sent at, answered): explains late or repeated confs.
+        self._finished: dict[int, tuple[str, float, bool]] = {}
 
         self._charge_box_id: str | None = None
         self._info: ChargerInfo | None = None
@@ -204,6 +214,7 @@ class DuosidaClient:
             self._reader = reader
             self._splitter.reset()
             self._heard_id = False
+            self._trigger_status = None
             self._last_rx = loop.time()
             boot: asyncio.Future[ChargerInfo] = loop.create_future()
             self._boot = boot
@@ -219,7 +230,11 @@ class DuosidaClient:
                 if not self._heard_id or self._charge_box_id is None or not self.connected:
                     await self._close(DuosidaConnectionError("handshake failed"))
                     raise DuosidaTimeoutError("charger did not identify itself") from None
-                _LOGGER.warning("%s: no BootNotification, continuing with id only", self.host)
+                _LOGGER.warning(
+                    "%s: no BootNotification (trigger answered %s), continuing with id only",
+                    self.host,
+                    _trigger_status_text(self._trigger_status),
+                )
                 info = ChargerInfo(device_id=self._charge_box_id)
                 self._info = info
             except BaseException:
@@ -296,7 +311,14 @@ class DuosidaClient:
 
         The field names in :class:`~duosida_ev.ChargerConfiguration` are
         provisional; see its docstring.
+
+        The charger is slow to answer this request and sometimes ignores a
+        send, so ``timeout`` defaults to 7 s (or the client's ``timeout`` if
+        longer) rather than the command timeout. Unanswered sends are
+        repeated every ``retry_interval``.
         """
+        if timeout is None:
+            timeout = max(CONFIGURATION_TIMEOUT, self.timeout)
         conf = await self._request(Action.DATA_TRANSFER, p.pull_all_configuration(), timeout)
         return p.parse_configuration(conf.body)
 
@@ -399,9 +421,11 @@ class DuosidaClient:
         writer = self._writer
         assert writer is not None
         message_id = self._new_message_id()
-        future: asyncio.Future[Frame] = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Frame] = loop.create_future()
         self._pending[message_id] = (action.confirmation, future)
         frame = p.encode_frame(action.request, body, self._charge_box_id, message_id)
+        sent_at = loop.time()
         try:
             self._write(frame)
             _LOGGER.debug("%s >> %s.req #%s", self.host, action.name, message_id)
@@ -420,6 +444,10 @@ class DuosidaClient:
             raise DuosidaConnectionError(f"write failed: {err}") from err
         finally:
             self._pending.pop(message_id, None)
+            answered = future.done() and not future.cancelled() and future.exception() is None
+            self._finished[message_id] = (action.name, sent_at, answered)
+            while len(self._finished) > _FINISHED_REQUESTS:
+                del self._finished[next(iter(self._finished))]
 
     def _reply(self, request: Frame, body: bytes, *, always: bool = False) -> None:
         if not (always or self.respond_to_charger):
@@ -473,6 +501,8 @@ class DuosidaClient:
             entry = self._pending.get(frame.message_id)
             if entry is not None and entry[0] == frame.field and not entry[1].done():
                 entry[1].set_result(frame)
+            else:
+                self._on_unmatched_confirmation(frame)
             return
         if frame.field == Action.BOOT_NOTIFICATION.request:
             self._on_boot(frame)
@@ -496,6 +526,52 @@ class DuosidaClient:
             self._reply(frame, b"")
         else:
             _LOGGER.debug("%s: ignoring %s", self.host, frame.describe())
+
+    def _on_unmatched_confirmation(self, frame: Frame) -> None:
+        """A conf no request is waiting for: the handshake's, or late, or repeated."""
+        if (
+            frame.field == Action.TRIGGER_MESSAGE.confirmation
+            and self._boot is not None
+            and not self._boot.done()
+        ):
+            # The handshake's trigger is not a tracked request, and the charger
+            # answers it with its own message id.
+            self._trigger_status = p.conf_status(frame.body)
+            _LOGGER.debug(
+                "%s: BootNotification trigger answered %s",
+                self.host,
+                _trigger_status_text(self._trigger_status),
+            )
+            return
+        if frame.field == Action.TRIGGER_MESSAGE.confirmation:
+            return  # a keep-alive's answer; keep-alives are not tracked requests
+        pending = self._pending.get(frame.message_id)
+        if pending is not None and pending[1].done():
+            # A second answer in the same read, before the request finished.
+            _LOGGER.debug("%s: duplicate answer %s", self.host, frame.describe())
+            return
+        finished = self._finished.get(frame.message_id)
+        if finished is None:
+            _LOGGER.debug("%s: %s answers no request of ours", self.host, frame.describe())
+            return
+        action, sent_at, answered = finished
+        delay = asyncio.get_running_loop().time() - sent_at
+        if answered:
+            _LOGGER.debug(
+                "%s: duplicate answer to %s #%s, %.1f s after it was sent",
+                self.host,
+                action,
+                frame.message_id,
+                delay,
+            )
+        else:
+            _LOGGER.debug(
+                "%s: late answer to %s #%s, %.1f s after it was sent (no longer awaited)",
+                self.host,
+                action,
+                frame.message_id,
+                delay,
+            )
 
     def _on_boot(self, frame: Frame) -> None:
         info = p.parse_boot_notification(frame.body, frame.charge_box_id)
@@ -537,22 +613,23 @@ class DuosidaClient:
             # Without answers the triggered Heartbeat would only be retransmitted.
             if self.keepalive_interval and self.respond_to_charger and self._charge_box_id:
                 body = p.trigger_message(p.TriggerTarget.HEARTBEAT)
+                message_id = self._new_message_id()
                 frame = p.encode_frame(
-                    Action.TRIGGER_MESSAGE.request,
-                    body,
-                    self._charge_box_id,
-                    self._new_message_id(),
+                    Action.TRIGGER_MESSAGE.request, body, self._charge_box_id, message_id
                 )
                 try:
                     self._write(frame)
                 except DuosidaConnectionError:
                     return
+                _LOGGER.debug("%s >> TRIGGER_MESSAGE.req #%s (keep-alive)", self.host, message_id)
 
     def _fail(self, err: DuosidaError) -> None:
         """Tear down after a fatal error detected by a background task."""
         writer, self._writer = self._writer, None
         reader, self._reader = self._reader, None
         if writer is None:
+            # Already closing: this is how the reader saw the session end.
+            _LOGGER.debug("%s: while closing: %s", self.host, err)
             return
         _LOGGER.info("%s: connection lost: %s", self.host, err)
         current = asyncio.current_task()
@@ -570,17 +647,25 @@ class DuosidaClient:
         self, reader: asyncio.StreamReader | None, writer: asyncio.StreamWriter
     ) -> None:
         """FIN, read until the charger's FIN (or the cap), then close."""
+        cap = min(CLOSE_TIMEOUT, self.timeout)
         try:
             with suppress(OSError, RuntimeError):
                 if not writer.is_closing() and writer.can_write_eof():
                     writer.write_eof()
+                    _LOGGER.debug("%s: FIN sent, reading for up to %.1f s", self.host, cap)
             if reader is not None:
-                with suppress(OSError, RuntimeError, TimeoutError):
-                    async with asyncio.timeout(min(CLOSE_TIMEOUT, self.timeout)):
+                try:
+                    async with asyncio.timeout(cap):
                         while await reader.read(_READ_SIZE):
                             pass
+                    _LOGGER.debug("%s: charger closed the connection", self.host)
+                except TimeoutError:
+                    _LOGGER.debug("%s: no FIN from the charger within %.1f s", self.host, cap)
+                except (OSError, RuntimeError) as err:
+                    _LOGGER.debug("%s: read failed while closing: %s", self.host, err)
         finally:
             writer.close()
+            _LOGGER.debug("%s: closed", self.host)
 
     async def _close(self, err: DuosidaError) -> None:
         linger, self._linger_task = self._linger_task, None
@@ -589,6 +674,8 @@ class DuosidaClient:
                 await linger  # finish closing the old session before anything else
         self._reader = None
         writer, self._writer = self._writer, None
+        if writer is not None:
+            _LOGGER.debug("%s: closing (%s)", self.host, err)
         reader_task = self._reader_task
         tasks = [t for t in (reader_task, self._watchdog_task) if t is not None]
         self._reader_task = self._watchdog_task = None
@@ -609,6 +696,7 @@ class DuosidaClient:
                     await writer.wait_closed()
         self._abort_waiters(err)
         if writer is not None:
+            _LOGGER.debug("%s: closed", self.host)
             self._notify()
 
     async def _shutdown(
@@ -627,7 +715,17 @@ class DuosidaClient:
                 writer.write_eof()
         except (OSError, RuntimeError):
             return
-        await asyncio.wait({reader_task}, timeout=min(CLOSE_TIMEOUT, self.timeout))
+        cap = min(CLOSE_TIMEOUT, self.timeout)
+        _LOGGER.debug("%s: FIN sent, reading for up to %.1f s", self.host, cap)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await asyncio.wait({reader_task}, timeout=cap)
+        if reader_task.done():
+            _LOGGER.debug(
+                "%s: reader finished %.1f s after our FIN", self.host, loop.time() - started
+            )
+        else:
+            _LOGGER.debug("%s: no FIN from the charger within %.1f s", self.host, cap)
 
     def _abort_waiters(self, err: DuosidaError) -> None:
         futures: list[asyncio.Future[Frame] | asyncio.Future[ChargerStatus]] = [
@@ -646,6 +744,12 @@ class DuosidaClient:
                 listener()
             except Exception:
                 _LOGGER.exception("%s: listener failed", self.host)
+
+
+def _trigger_status_text(status: int | None) -> str:
+    if status is None:
+        return "no answer"
+    return f"{status} ({p.TRIGGER_STATUS_NAMES.get(status, 'unknown')})"
 
 
 def _ranged(name: str, value: int, low: int, high: int) -> str:

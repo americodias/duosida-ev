@@ -209,7 +209,7 @@ async def _stop(client: DuosidaClient, args: argparse.Namespace) -> int:
 
 
 async def _get_config(client: DuosidaClient, args: argparse.Namespace) -> int:
-    config = await client.get_configuration(timeout=max(args.timeout, 10.0))
+    config = await client.get_configuration()
     if args.json:
         print(json.dumps(config.to_dict(), indent=2))
         return 0

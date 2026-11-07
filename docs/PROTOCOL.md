@@ -115,6 +115,18 @@ the current time.
 `Heartbeat.conf.currentTime`, in contrast, is a plain varint (*verified*: the
 app's values are the real time).
 
+The charger answers the trigger with its own message id, not 0.
+`TriggerMessage.conf` field 1 has only been seen as 0 (Accepted). In OCPP 1.6
+order, 1 would be Rejected and 2 NotImplemented (*unverified*).
+
+Once, after a client reconnected 33 s after closing its previous session, the
+charger spent about 12 minutes answering the trigger and sending
+`MeterValues.req` on three successive connections. It sent no
+`BootNotification` and no `DataTransfer` at all, so the clients got no status.
+It then recovered by itself, with a normal handshake (*observed once, cause
+unknown*). The status of the trigger's answer was not logged then. The next
+release logs it.
+
 ## Keep-alive and acknowledgements
 
 The app sends `TriggerMessage(requestedMessage = 3, Heartbeat)` every 5 s; the
@@ -233,7 +245,26 @@ then `StartTransaction.req`.
 ## Configuration
 
 `DataPullAllConfigurationReq` is answered with `DataTransfer.conf {1: 0, 15:
-{...}}`, about 50 fields. Some OCPP keys are recognisable by value:
+{...}}`, about 50 fields.
+
+The charger ignores some of these requests. It TCP-acknowledges them and never
+answers. It answers others late.
+- **Measured** on a Home Assistant installation over 7 h: one pull every
+  10 min, resent with the same id at +2 s and +4 s, with a 5 s timeout.
+  - 33 of 44 pulls got an answer. That includes 3 answers that came 5–6 s
+    after the first send, after the timeout, so the client saw 30.
+  - Every answer came 0.7–2.2 s after one of the sends.
+- *Inferred*: because the ids are the same, which send an answer belongs to
+  can't be told. The late answers fit answers to the +4 s resend, so a
+  same-id resend can recover a pull whose first send was ignored.
+- The unanswered pulls came in a block: the first 7, over 70 min. After that
+  only single pulls failed.
+- Failures happened both while charging and in `SuspendedEV`.
+- A vendor-app capture shows the app's own pull ignored too, with its resend.
+- The cause is unknown. Hence the 7 s default timeout of `get_configuration()`,
+  which gives 4 sends (0, 2, 4 and 6 s). More resends were never tried.
+
+Some OCPP keys are recognisable by value:
 `MeterValuesSampledData` (22), `MeterValuesAlignedData` (23),
 `StopTxnSampledData` (30), `StopTxnAlignedData` (31) and
 `SupportedFeatureProfiles` (32: `Core,LocalAuthListManagement,Reservation,SmartCharging,RemoteTrigger`).

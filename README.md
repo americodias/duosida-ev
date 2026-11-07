@@ -133,6 +133,10 @@ The charger returns about 50 unnamed fields. `max_current` is verified on a
 real charger; the other three named properties are inferred and still need
 confirming ([details](docs/PROTOCOL.md#configuration)).
 
+The charger ignores some configuration requests and answers others only after
+a few seconds, so `get_configuration()` waits up to 15 s, resending the request
+every 2 s, instead of the command timeout. Retry later if it still times out.
+
 ### Discovery
 
 ```python
