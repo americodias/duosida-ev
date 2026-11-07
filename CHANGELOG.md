@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-11-07
+
+### Changed
+
+- Releases are built and published to PyPI by GitHub Actions
+  (`.github/workflows/publish.yml`) when a GitHub release is published. The
+  workflow uses PyPI trusted publishing, so no token is stored, and PyPI gets
+  attestations. Before building, it checks that the release tag matches the
+  package version and runs the lint and the tests. The code is unchanged
+  since 0.2.1.
+
 ## [0.2.1] - 2026-11-07
 
 ### Changed
@@ -187,6 +198,7 @@ changes throughout; see "Migrating from 0.1" in the README.
 - Python 3.6+ compatible
 - No external dependencies (stdlib only)
 
+[0.2.2]: https://github.com/americodias/duosida-ev/releases/tag/v0.2.2
 [0.2.1]: https://github.com/americodias/duosida-ev/releases/tag/v0.2.1
 [0.2.0]: https://github.com/americodias/duosida-ev/releases/tag/v0.2.0
 [0.1.3]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.3

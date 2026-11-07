@@ -53,3 +53,16 @@ extract, with the charger id replaced by `0123456789012345678`.
 The version lives only in `src/duosida_ev/__init__.py` (hatch reads it).
 Releasing to PyPI and pushing tags are public actions: confirm with the owner.
 `duosida-ha` pins the version in `manifest.json` and `pyproject.toml`.
+
+PyPI releases come only from CI, never from `uv publish` on a machine. Home
+Assistant's `dependency-transparency` rule (Bronze) requires every version
+on PyPI to be built and published by a public CI from a tagged release.
+
+1. Bump `__version__`, date the `CHANGELOG.md` section, commit, push `main`.
+2. Run the workspace's `guard.sh tree` (the sdist only holds tree files).
+3. Tag `vX.Y.Z`, push the tag, then create the GitHub release:
+   `gh release create vX.Y.Z --title ... --notes ...`.
+4. `.github/workflows/publish.yml` checks that the tag matches
+   `__version__`, runs lint and tests, builds, and publishes through trusted
+   publishing (environment `pypi`).
+5. Check the release: the files on PyPI, and `guard.sh dist` on them.
