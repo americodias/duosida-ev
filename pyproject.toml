@@ -4,40 +4,70 @@ build-backend = "hatchling.build"
 
 [project]
 name = "duosida-ev"
-version = "0.1.3"
-description = "Python library for direct TCP control of Duosida EV wall chargers"
+dynamic = ["version"]
+description = "Async local control of Duosida EV wall chargers (OCPP 1.6 over protobuf, no cloud)"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
     {name = "Americo Dias", email = "americo.dias@gmail.com"}
 ]
-keywords = ["duosida", "ev", "charger", "electric-vehicle", "smart-home", "iot"]
+keywords = ["duosida", "ev", "charger", "evse", "ocpp", "asyncio", "home-assistant", "smart-home"]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.6",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Home Automation",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
-requires-python = ">=3.6"
+requires-python = ">=3.11"
 dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/americodias/duosida-ev"
 Repository = "https://github.com/americodias/duosida-ev"
 Issues = "https://github.com/americodias/duosida-ev/issues"
+Changelog = "https://github.com/americodias/duosida-ev/blob/main/CHANGELOG.md"
 
 [project.scripts]
 duosida = "duosida_ev.cli:main"
 
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[tool.hatch.version]
+path = "src/duosida_ev/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/duosida_ev"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "docs", "tools", "CHANGELOG.md", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["ASYNC", "B", "E", "F", "I", "PERF", "RUF", "SIM", "UP", "BLE"]
+# timeout= parameters are the conventional API; typographic dashes are intended.
+ignore = ["ASYNC109", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["BLE001"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]

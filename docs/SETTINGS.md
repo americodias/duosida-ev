@@ -4,9 +4,12 @@ This document explains the configuration settings available on Duosida EV charge
 
 ## Important Note
 
-**All configuration settings are write-only.** The charger does not return configuration values via the TCP protocol. When you use methods like `set_max_current()`, `set_connection_timeout()`, or `set_direct_work_mode()`, the settings are sent to the charger but cannot be read back.
+Settings are written with OCPP `ChangeConfiguration`. Since 0.2.0 every setter
+waits for the charger's answer and raises `CommandRejectedError` if it refuses.
 
-If you need to track configuration state, you must maintain it in your application or external storage.
+Settings can also be **read back** with `get_configuration()`
+(`duosida get-config`). Only some fields are named so far, and those names are
+provisional; see [PROTOCOL.md](PROTOCOL.md#configuration).
 
 ## Direct Work Mode (VendorDirectWorkMode)
 

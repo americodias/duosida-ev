@@ -1,126 +1,55 @@
-# Duosida EV Charger - Direct TCP Control
+# duosida-ev
 
-## Project Overview
+Async Python library and `duosida` CLI for local control of Duosida EV
+chargers. The charger speaks **OCPP 1.6 encoded as protobuf** on TCP 9988,
+with itself as the charge point; this library is the central system. Read
+[docs/PROTOCOL.md](docs/PROTOCOL.md) before touching protocol code: it records
+what is verified and what is only inferred.
 
-Python library for direct TCP communication with Duosida EV wall chargers, bypassing the cloud API. Provides real-time telemetry and control via the charger's native protobuf protocol.
+## Layout (`src/duosida_ev/`)
 
-## Package Structure
+| Module | Role |
+|---|---|
+| `protobuf.py` | schema-less wire codec (`Message`, `Field`, encoders, zigzag) |
+| `framing.py` | `FrameSplitter`: a message ends at its field 101 |
+| `protocol.py` | OCPP action numbers (`Action`: conf `2k−1`, req `2k`), envelope (`Frame`, fields 100/101), builders and parsers |
+| `models.py` | frozen dataclasses: `ChargerStatus`, `ChargerInfo`, `ConnectorStatus`, `ChargerConfiguration`; `ChargerState` (OCPP names) |
+| `client.py` | `DuosidaClient`: connection, reader task, auto-answers, watchdog, commands |
+| `discovery.py` | UDP probe 48890 → 48899, `identify_charger` |
+| `cli.py` | argparse + `asyncio.run` |
 
-- **src/duosida_ev/charger.py** - Main `DuosidaCharger` class
-- **src/duosida_ev/cli.py** - Command-line interface
-- **src/duosida_ev/discovery.py** - Network discovery
-- **src/duosida_ev/exceptions.py** - Custom exceptions
+No runtime dependencies. Python ≥ 3.11.
 
-## Usage
+## Rules
 
-```python
-from duosida_ev import DuosidaCharger, discover_chargers
+- **Never run the CLI or the library against the real charger without the
+  owner's OK** (see the workspace `CLAUDE.md`). Test with the fake charger in
+  `tests/helpers.py`.
+- Only name a protocol field when a capture backs it; keep the rest in `raw` /
+  `unknown`. Update `docs/PROTOCOL.md` with the evidence.
+- Builders must stay byte-identical to the vendor app's messages
+  (`tests/test_protocol.py::BuildersMatchVendorAppTest`).
+- `BootNotification.conf` must carry the current time: the charger sets its
+  clock from it (the 0.1.x bug).
+- No code from `matiaskunin/duosida-local`: it is GPL-3.0 and this is MIT.
 
-# Discover chargers
-devices = discover_chargers()
-for device in devices:
-    print(f"Found: {device['ip']} - {device['device_id']}")
-
-# Connect and get status
-charger = DuosidaCharger(
-    host="192.168.1.100",
-    device_id="YOUR_DEVICE_ID"
-)
-
-charger.connect()
-status = charger.get_status()
-print(status)
-charger.disconnect()
-```
-
-### CLI Commands
-
-```bash
-# Auto-discover and get status
-duosida status
-
-# Get status with JSON output
-duosida status --json
-
-# Set max current (6-32A)
-duosida set-current 16
-
-# Start/stop charging
-duosida start
-duosida stop
-
-# Monitor continuously
-duosida monitor
-
-# Configuration settings
-duosida set-timeout 120          # 30-900 seconds
-duosida set-max-temp 90          # 85-95°C
-duosida set-max-voltage 280      # 265-290V
-duosida set-min-voltage 90       # 70-110V
-duosida set-direct-mode on       # on/off
-duosida set-led-brightness 3     # 0=off, 1=low, 3=high
-```
-
-## Telemetry Fields
-
-| Field | Source | Description |
-|-------|--------|-------------|
-| conn_status | Field 17 | Connection status (0-6) |
-| cp_voltage | Field 9 | Control Pilot voltage (V) |
-| voltage | Field 1 | Line voltage L1 (V) |
-| voltage_l2 | - | Line voltage L2 (V) - not mapped yet |
-| voltage_l3 | - | Line voltage L3 (V) - not mapped yet |
-| current | Field 2 | Charging current L1 (A) |
-| current_l2 | - | Charging current L2 (A) - not mapped yet |
-| current_l3 | - | Charging current L3 (A) - not mapped yet |
-| power | Calculated | V × I (W) |
-| temperature_station | Field 8 | Station temperature (°C) |
-| session_energy | Field 4 | Session energy (kWh) |
-| session_time | Calculated | From timestamp (minutes) |
-| device_id | Field 100 | Device identifier |
-| model | Field 4.2 | Device model |
-| manufacturer | Field 4.4 | Manufacturer |
-| firmware | Field 4.5 | Firmware version |
-
-## Status Codes
-
-Based on [official HA integration](https://github.com/jello1974/duosidaEV-home-assistant):
-
-- 0: Available
-- 1: Preparing
-- 2: Charging
-- 3: Cooling
-- 4: SuspendedEV
-- 5: Finished
-- 6: Holiday
-
-## Protocol Details
-
-- **Port**: 9988 (TCP)
-- **Discovery**: UDP broadcast on port 48890/48899
-- **Message format**: Protobuf with nested fields
-- **Telemetry path**: Field 16 → Field 10 (DataVendorStatusReq)
-
-## Dependencies
-
-- Python 3.6+
-- No external dependencies (uses only stdlib)
-
-## Development Environment
+## Commands
 
 ```bash
-# Activate the virtual environment
-source .venv/bin/activate
-
-# Run tests
-python -m pytest tests/
-
-# Install in development mode
-pip install -e .
+uv run --with pytest pytest -q            # 114 tests
+uv run --python 3.11 --with pytest pytest -q
+uvx ruff check src tests tools && uvx ruff format --check src tests tools
+uvx mypy --strict src
+python tools/pcap.py capture.pcap         # decode a capture
+python tools/extract_fixtures.py ON_OFF.pcap DIRECT_MODE.pcap MAX_VOLTAGE.pcap
 ```
 
-## Notes
+The captures (2025-11-18) are kept privately by the owner and are never
+committed; the workspace `CLAUDE.md` says where they are. `tests/fixtures/captures.json` is a sanitized
+extract, with the charger id replaced by `0123456789012345678`.
 
-- Device ID can be found via discovery or in the official Duosida app
-- CLI auto-discovers charger if --host/--device-id not provided
-- Use -v/--verbose for debug output
+## Release
+
+The version lives only in `src/duosida_ev/__init__.py` (hatch reads it).
+Releasing to PyPI and pushing tags are public actions: confirm with the owner.
+`duosida-ha` pins the version in `manifest.json` and `pyproject.toml`.

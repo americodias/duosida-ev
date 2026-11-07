@@ -1,405 +1,281 @@
-"""
-Command-line interface for Duosida EV Charger
-"""
+"""``duosida`` command-line tool."""
 
-import sys
+from __future__ import annotations
+
 import argparse
-import time
+import asyncio
 import json
 import logging
+import sys
+from collections.abc import Awaitable, Callable, Sequence
+from contextlib import suppress
+from dataclasses import asdict
 
-from .charger import DuosidaCharger
-from .discovery import discover_chargers, _get_device_id_via_tcp
-from .exceptions import DuosidaError
+from . import __version__
+from .client import DuosidaClient
+from .discovery import BROADCAST, discover_chargers
+from .exceptions import DuosidaConnectionError, DuosidaError, DuosidaTimeoutError
+from .models import ChargerStatus, ConfigurationStatus
 
-logger = logging.getLogger(__name__)
-
-
-def setup_logging(verbose: bool = False):
-    """Configure logging for CLI"""
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format='%(message)s' if not verbose else '%(levelname)s: %(message)s'
-    )
+_RECONNECT_DELAYS = (60, 120, 300)
+_ON_OFF = {"on": True, "1": True, "true": True, "off": False, "0": False, "false": False}
 
 
-def main():
+def _on_off(value: str) -> bool:
+    try:
+        return _ON_OFF[value.lower()]
+    except KeyError:
+        raise argparse.ArgumentTypeError("expected on/off") from None
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Duosida EV Charger - Direct Control Tool",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        prog="duosida", description="Local control of Duosida EV chargers."
     )
-    parser.add_argument('-v', '--verbose', action='store_true',
-                        help='Enable verbose output')
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+    disc = sub.add_parser("discover", help="find chargers on the network")
+    disc.add_argument("--timeout", type=float, default=3.0, help="seconds to listen (3)")
+    disc.add_argument(
+        "--target",
+        action="append",
+        help="probe destination, repeatable (default 255.255.255.255); "
+        "use a subnet broadcast or IP to reach another VLAN",
+    )
+    disc.add_argument("--no-identify", action="store_true", help="skip the TCP identification")
+    disc.add_argument("--json", action="store_true", help="JSON output")
 
-    # Discover command
-    discover_parser = subparsers.add_parser('discover', help='Discover chargers on the network')
-    discover_parser.add_argument('--timeout', type=int, default=5,
-                                  help='Discovery timeout in seconds (default: 5)')
+    conn = argparse.ArgumentParser(add_help=False)
+    conn.add_argument("--host", help="charger IP (discovered if omitted)")
+    conn.add_argument("--port", type=int, default=9988, help="TCP port (9988)")
+    conn.add_argument("--timeout", type=float, default=5.0, help="seconds per answer (5)")
+    # Accepted for compatibility with 0.1.x; the id now comes from the charger.
+    conn.add_argument("--device-id", help=argparse.SUPPRESS)
 
-    # Status command
-    status_parser = subparsers.add_parser('status', help='Get charger status')
-    status_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    status_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    status_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    status_parser.add_argument('--json', action='store_true', help='Output in JSON format')
+    def command(name: str, text: str) -> argparse.ArgumentParser:
+        return sub.add_parser(name, parents=[conn], help=text)
 
-    # Set current command
-    current_parser = subparsers.add_parser('set-current', help='Set maximum charging current')
-    current_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    current_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    current_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    current_parser.add_argument('amps', type=int, help='Current in amperes (6-32)')
+    status = command("status", "show the current status")
+    status.add_argument("--json", action="store_true", help="JSON output")
 
-    # Monitor command
-    monitor_parser = subparsers.add_parser('monitor', help='Monitor charger continuously')
-    monitor_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    monitor_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    monitor_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    monitor_parser.add_argument('--interval', type=float, default=2.0,
-                                 help='Polling interval in seconds')
-    monitor_parser.add_argument('--duration', type=float, help='Monitor duration in seconds')
+    monitor = command("monitor", "print every status update")
+    monitor.add_argument("--duration", type=float, help="stop after N seconds")
+    monitor.add_argument("--json", action="store_true", help="one JSON object per line")
 
-    # Start command
-    start_parser = subparsers.add_parser('start', help='Start charging')
-    start_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    start_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    start_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
+    command("start", "start charging")
+    stop = command("stop", "stop charging")
+    stop.add_argument("--transaction-id", type=int, help="override the active transaction")
 
-    # Stop command
-    stop_parser = subparsers.add_parser('stop', help='Stop charging')
-    stop_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    stop_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    stop_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
+    config = command("get-config", "read the configuration (field names provisional)")
+    config.add_argument("--json", action="store_true", help="JSON output")
 
-    # Config command (generic)
-    config_parser = subparsers.add_parser('config', help='Set a configuration value')
-    config_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    config_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    config_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    config_parser.add_argument('key', help='Configuration key')
-    config_parser.add_argument('value', help='Configuration value')
+    setter = command("config", "send any configuration key")
+    setter.add_argument("key")
+    setter.add_argument("value")
 
-    # Set timeout command
-    timeout_parser = subparsers.add_parser('set-timeout', help='Set connection timeout (30-900s)')
-    timeout_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    timeout_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    timeout_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    timeout_parser.add_argument('seconds', type=int, help='Timeout in seconds (30-900)')
+    for name, dest, text in (
+        ("set-current", "amps", "max charging current, 6-32 A"),
+        ("set-timeout", "seconds", "authorization timeout after plug-in, 30-900 s"),
+        ("set-max-temp", "celsius", "max working temperature, 85-95 °C"),
+        ("set-max-voltage", "volts", "over-voltage limit, 265-290 V"),
+        ("set-min-voltage", "volts", "under-voltage limit, 70-110 V"),
+    ):
+        command(name, text).add_argument(dest, type=int)
+    command("set-led-brightness", "LED brightness: 0 off, 1 low, 3 high").add_argument(
+        "level", type=int, choices=[0, 1, 3]
+    )
+    command("set-direct-mode", "plug-and-charge on/off").add_argument("enabled", type=_on_off)
+    command("set-stop-on-disconnect", "stop when the EV unplugs, on/off").add_argument(
+        "enabled", type=_on_off
+    )
+    return parser
 
-    # Set max temperature command
-    maxtemp_parser = subparsers.add_parser('set-max-temp', help='Set max temperature (85-95°C)')
-    maxtemp_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    maxtemp_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    maxtemp_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    maxtemp_parser.add_argument('celsius', type=int, help='Temperature in Celsius (85-95)')
 
-    # Set max voltage command
-    maxvolt_parser = subparsers.add_parser('set-max-voltage', help='Set max voltage (265-290V)')
-    maxvolt_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    maxvolt_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    maxvolt_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    maxvolt_parser.add_argument('voltage', type=int, help='Voltage in volts (265-290)')
+async def _resolve_host(args: argparse.Namespace) -> str | None:
+    if args.host:
+        return str(args.host)
+    print("Discovering chargers...", file=sys.stderr)
+    found = await discover_chargers(identify=False)
+    if len(found) == 1:
+        print(f"Using {found[0].host}", file=sys.stderr)
+        return found[0].host
+    if not found:
+        print("No charger found; pass --host.", file=sys.stderr)
+    else:
+        print("Several chargers found; pass --host:", file=sys.stderr)
+        for charger in found:
+            print(f"  {charger.host}  {charger.mac or ''}", file=sys.stderr)
+    return None
 
-    # Set min voltage command
-    minvolt_parser = subparsers.add_parser('set-min-voltage', help='Set min voltage (70-110V)')
-    minvolt_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    minvolt_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    minvolt_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    minvolt_parser.add_argument('voltage', type=int, help='Voltage in volts (70-110)')
 
-    # Set direct mode command
-    directmode_parser = subparsers.add_parser('set-direct-mode', help='Set direct work mode (plug and charge)')
-    directmode_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    directmode_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    directmode_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    directmode_parser.add_argument('enabled', choices=['on', 'off', '1', '0', 'true', 'false'],
-                                   help='Enable or disable direct mode')
+async def _discover(args: argparse.Namespace) -> int:
+    found = await discover_chargers(
+        args.timeout, targets=args.target or (BROADCAST,), identify=not args.no_identify
+    )
+    if args.json:
+        print(json.dumps([asdict(charger) for charger in found], indent=2))
+        return 0 if found else 1
+    if not found:
+        print("No chargers found. Is the charger on this subnet? Try --target <subnet broadcast>.")
+        return 1
+    for charger in found:
+        print(charger.host)
+        for label, value in (
+            ("Device ID", charger.device_id),
+            ("Model", charger.model),
+            ("Firmware", charger.firmware),
+            ("MAC", charger.mac),
+            ("Module", f"{charger.module_type} {charger.module_firmware}"),
+        ):
+            if value:
+                print(f"  {label + ':':11}{value}")
+    return 0
 
-    # Set LED brightness command
-    led_parser = subparsers.add_parser('set-led-brightness', help='Set LED/screen brightness')
-    led_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    led_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    led_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    led_parser.add_argument('level', type=int, choices=[0, 1, 3], help='Brightness (0=off, 1=low, 3=high)')
 
-    # Set stop on disconnect command
-    stop_disconnect_parser = subparsers.add_parser('set-stop-on-disconnect', help='Set stop transaction on EV disconnect')
-    stop_disconnect_parser.add_argument('--host', help='Charger IP address (auto-discovered if not provided)')
-    stop_disconnect_parser.add_argument('--device-id', help='Device ID (auto-discovered if not provided)')
-    stop_disconnect_parser.add_argument('--port', type=int, default=9988, help='Port (default: 9988)')
-    stop_disconnect_parser.add_argument('enabled', choices=['on', 'off', '1', '0', 'true', 'false'],
-                                        help='Enable or disable stop on disconnect')
+def _print_config_result(what: str, status: ConfigurationStatus) -> None:
+    note = " (takes effect after a reboot)" if status is ConfigurationStatus.REBOOT_REQUIRED else ""
+    print(f"{what}: accepted{note}")
 
-    args = parser.parse_args()
 
-    # Setup logging based on verbose flag and JSON output
-    json_output = args.command == 'status' and getattr(args, 'json', False)
-    if not json_output:
-        setup_logging(verbose=getattr(args, 'verbose', False))
+async def _connected(args: argparse.Namespace) -> int:
+    host = await _resolve_host(args)
+    if host is None:
+        return 1
+    if args.device_id:
+        print("note: --device-id is ignored; the charger reports its own id", file=sys.stderr)
+    async with DuosidaClient(host, args.port, timeout=args.timeout) as client:
+        info = client.info
+        if info is not None and not getattr(args, "json", False):
+            print(f"{info.manufacturer} {info.model} {info.device_id} ({info.firmware})")
+        handler = _HANDLERS[args.command]
+        return await handler(client, args)
 
+
+async def _status(client: DuosidaClient, args: argparse.Namespace) -> int:
+    status = await client.get_status()
+    if args.json:
+        info = client.info
+        out = {"info": asdict(info) if info else None, "status": status.to_dict()}
+        print(json.dumps(out, indent=2))
+    else:
+        print(status)
+    return 0
+
+
+async def _monitor(client: DuosidaClient, args: argparse.Namespace) -> int:
+    loop = asyncio.get_running_loop()
+    end = loop.time() + args.duration if args.duration else None
+
+    def show(status: ChargerStatus) -> None:
+        if args.json:
+            print(json.dumps(status.to_dict()), flush=True)
+        else:
+            print(f"--- {status.received_at:%H:%M:%S}\n{status}", flush=True)
+
+    failures = 0
+    if client.status is not None:  # often arrives during connect()
+        show(client.status)
+    while end is None or loop.time() < end:
+        wait = 60.0 if end is None else max(end - loop.time(), 0.0)
+        try:
+            show(await client.wait_for_status(timeout=wait))
+        except DuosidaTimeoutError:
+            if end is None:
+                print("no status for 60 s", file=sys.stderr)
+        except DuosidaConnectionError as err:
+            # The charger refuses quick reconnects; back off like duosida-lan does.
+            delay = _RECONNECT_DELAYS[min(failures, len(_RECONNECT_DELAYS) - 1)]
+            failures += 1
+            print(f"connection lost ({err}); reconnecting in {delay} s", file=sys.stderr)
+            await asyncio.sleep(delay)
+            with suppress(DuosidaError):
+                await client.connect()
+                failures = 0
+    return 0
+
+
+async def _start(client: DuosidaClient, args: argparse.Namespace) -> int:
+    await client.start_charging()
+    print("Start accepted")
+    return 0
+
+
+async def _stop(client: DuosidaClient, args: argparse.Namespace) -> int:
+    await client.stop_charging(transaction_id=args.transaction_id)
+    print("Stop accepted")
+    return 0
+
+
+async def _get_config(client: DuosidaClient, args: argparse.Namespace) -> int:
+    config = await client.get_configuration(timeout=max(args.timeout, 10.0))
+    if args.json:
+        print(json.dumps(config.to_dict(), indent=2))
+        return 0
+    print("Provisional names (inferred from one capture):")
+    for name, value in config.to_dict()["provisional"].items():
+        print(f"  {name:16} {value}")
+    print("Raw fields:")
+    for number, value in sorted(config.redacted().items()):
+        shown = value.hex() if isinstance(value, bytes) else value
+        print(f"  {number:3} {shown!r}")
+    return 0
+
+
+def _setter(
+    label: str, call: Callable[[DuosidaClient, argparse.Namespace], Awaitable[ConfigurationStatus]]
+) -> Callable[[DuosidaClient, argparse.Namespace], Awaitable[int]]:
+    async def run(client: DuosidaClient, args: argparse.Namespace) -> int:
+        _print_config_result(label, await call(client, args))
+        return 0
+
+    return run
+
+
+_HANDLERS: dict[str, Callable[[DuosidaClient, argparse.Namespace], Awaitable[int]]] = {
+    "status": _status,
+    "monitor": _monitor,
+    "start": _start,
+    "stop": _stop,
+    "get-config": _get_config,
+    "config": _setter("config", lambda c, a: c.set_config(a.key, a.value)),
+    "set-current": _setter("max current", lambda c, a: c.set_max_current(a.amps)),
+    "set-timeout": _setter("connection timeout", lambda c, a: c.set_connection_timeout(a.seconds)),
+    "set-max-temp": _setter("max temperature", lambda c, a: c.set_max_temperature(a.celsius)),
+    "set-max-voltage": _setter("max voltage", lambda c, a: c.set_max_voltage(a.volts)),
+    "set-min-voltage": _setter("min voltage", lambda c, a: c.set_min_voltage(a.volts)),
+    "set-led-brightness": _setter("LED brightness", lambda c, a: c.set_led_brightness(a.level)),
+    "set-direct-mode": _setter("direct mode", lambda c, a: c.set_direct_work_mode(a.enabled)),
+    "set-stop-on-disconnect": _setter(
+        "stop on disconnect", lambda c, a: c.set_stop_on_disconnect(a.enabled)
+    ),
+}
+
+
+async def _run(args: argparse.Namespace) -> int:
+    if args.command == "discover":
+        return await _discover(args)
+    return await _connected(args)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
         return 1
-
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     try:
-        return _execute_command(args)
-    except DuosidaError as e:
-        logger.error(f"Error: {e}")
-        return 1
+        return asyncio.run(_run(args))
     except KeyboardInterrupt:
-        logger.info("\nOperation cancelled")
         return 130
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        if getattr(args, 'verbose', False):
-            import traceback
-            traceback.print_exc()
+    except DuosidaError as err:
+        print(f"Error: {err}", file=sys.stderr)
         return 1
-
-
-def _execute_command(args):
-    """Execute the CLI command"""
-    # Execute command
-    if args.command == 'discover':
-        print(f"\nDiscovering Duosida chargers (timeout: {args.timeout}s)...")
-        print()
-
-        devices = discover_chargers(timeout=args.timeout)
-
-        if devices:
-            print(f"Found {len(devices)} device(s):\n")
-            for i, device in enumerate(devices, 1):
-                print(f"  {i}. {device['ip']}")
-                if device.get('device_id'):
-                    print(f"     Device ID: {device['device_id']}")
-                print(f"     MAC: {device['mac']}")
-                print(f"     Type: {device['type']}")
-                print(f"     Firmware: {device['firmware']}")
-                print()
-        else:
-            print("No devices found.")
-            print("\nPossible reasons:")
-            print("  - No Duosida chargers on this network")
-            print("  - Charger is on a different subnet")
-            print("  - Firewall blocking UDP port 48890/48899")
-            print()
-            return 1
-
-    else:
-        # Commands that require connection
-        # Disable debug output when JSON is requested
-        debug = not (args.command == 'status' and getattr(args, 'json', False))
-
-        host = args.host
-        device_id = args.device_id
-
-        # Auto-discover if host or device_id not provided
-        if not host or not device_id:
-            if host and not device_id:
-                # Host provided but not device_id - get it via TCP
-                if debug:
-                    print(f"Retrieving device ID from {host}...")
-                device_id = _get_device_id_via_tcp(host, args.port)
-                if not device_id:
-                    print(f"Error: Could not retrieve device ID from {host}")
-                    print("Please specify --device-id manually")
-                    return 1
-                if debug:
-                    print(f"Using device ID: {device_id}")
-            else:
-                # No host provided - use UDP discovery
-                if debug:
-                    print("Auto-discovering charger...")
-                devices = discover_chargers(timeout=5)
-
-                if not devices:
-                    print("Error: No chargers found on network")
-                    print("Please specify --host and --device-id manually")
-                    return 1
-
-                if len(devices) == 1:
-                    # Only one device found, use it
-                    device = devices[0]
-                    if debug:
-                        print(f"Found charger at {device['ip']}")
-                else:
-                    # Multiple devices found
-                    print(f"Error: Found {len(devices)} chargers on network")
-                    print("Please specify --host to select one:")
-                    for d in devices:
-                        print(f"  {d['ip']} - {d.get('device_id', 'unknown')}")
-                    return 1
-
-                host = device['ip']
-                if not device_id:
-                    device_id = device.get('device_id')
-                    if not device_id:
-                        print(f"Error: Could not retrieve device ID for {host}")
-                        print("Please specify --device-id manually")
-                        return 1
-                    if debug:
-                        print(f"Using device ID: {device_id}")
-
-        charger = DuosidaCharger(
-            host=host,
-            port=args.port,
-            device_id=device_id,
-            debug=debug
-        )
-
-        if not charger.connect():
-            return 1
-
-        try:
-            if args.command == 'status':
-                status = charger.get_status()
-                if status:
-                    if args.json:
-                        print(json.dumps(status.to_dict(), indent=2))
-                    else:
-                        print(status)
-                else:
-                    print("Failed to get status")
-                    return 1
-
-            elif args.command == 'set-current':
-                if not 6 <= args.amps <= 32:
-                    print(f"Error: Current must be between 6 and 32 amps")
-                    return 1
-
-                if charger.set_max_current(args.amps):
-                    print(f"[+] Set max current to {args.amps}A")
-                    time.sleep(1)
-                    status = charger.get_status()
-                    if status:
-                        print("\nNew status:")
-                        print(status)
-                else:
-                    print("Failed to set current")
-                    return 1
-
-            elif args.command == 'monitor':
-                print(f"[+] Monitoring charger (Ctrl+C to stop)...")
-
-                def print_status(status):
-                    print("\n" + "="*60)
-                    print(status)
-                    print("="*60)
-
-                charger.monitor(
-                    interval=args.interval,
-                    duration=args.duration,
-                    callback=print_status
-                )
-
-            elif args.command == 'start':
-                if charger.start_charging():
-                    print("[+] Start command sent")
-                    time.sleep(2)
-                    status = charger.get_status()
-                    if status:
-                        print(f"\nStatus: {status.state}")
-                        if status.power > 0:
-                            print(f"Power: {status.power:.1f}W")
-                else:
-                    print("Failed to start charging")
-                    return 1
-
-            elif args.command == 'stop':
-                if charger.stop_charging():
-                    print("[+] Stop command sent")
-                    time.sleep(2)
-                    status = charger.get_status()
-                    if status:
-                        print(f"\nStatus: {status.state}")
-                else:
-                    print("Failed to stop charging")
-                    return 1
-
-            elif args.command == 'config':
-                if charger.set_config(args.key, args.value):
-                    print(f"[+] Set {args.key} = {args.value}")
-                else:
-                    print(f"Failed to set config")
-                    return 1
-
-            elif args.command == 'set-timeout':
-                if not 30 <= args.seconds <= 900:
-                    print(f"Error: Timeout must be between 30 and 900 seconds")
-                    return 1
-
-                if charger.set_connection_timeout(args.seconds):
-                    print(f"[+] Set connection timeout to {args.seconds}s")
-                else:
-                    print("Failed to set timeout")
-                    return 1
-
-            elif args.command == 'set-max-temp':
-                if not 85 <= args.celsius <= 95:
-                    print(f"Error: Temperature must be between 85 and 95°C")
-                    return 1
-
-                if charger.set_max_temperature(args.celsius):
-                    print(f"[+] Set max temperature to {args.celsius}°C")
-                else:
-                    print("Failed to set temperature")
-                    return 1
-
-            elif args.command == 'set-max-voltage':
-                if not 265 <= args.voltage <= 290:
-                    print(f"Error: Voltage must be between 265 and 290V")
-                    return 1
-
-                if charger.set_max_voltage(args.voltage):
-                    print(f"[+] Set max voltage to {args.voltage}V")
-                else:
-                    print("Failed to set voltage")
-                    return 1
-
-            elif args.command == 'set-min-voltage':
-                if not 70 <= args.voltage <= 110:
-                    print(f"Error: Voltage must be between 70 and 110V")
-                    return 1
-
-                if charger.set_min_voltage(args.voltage):
-                    print(f"[+] Set min voltage to {args.voltage}V")
-                else:
-                    print("Failed to set voltage")
-                    return 1
-
-            elif args.command == 'set-direct-mode':
-                enabled = args.enabled.lower() in ('on', '1', 'true')
-                if charger.set_direct_work_mode(enabled):
-                    state = "enabled" if enabled else "disabled"
-                    print(f"[+] Direct work mode {state}")
-                else:
-                    print("Failed to set direct mode")
-                    return 1
-
-            elif args.command == 'set-led-brightness':
-                if charger.set_led_brightness(args.level):
-                    levels = {0: "off", 1: "low", 3: "high"}
-                    print(f"[+] Set LED brightness to {levels.get(args.level, args.level)}")
-                else:
-                    print("Failed to set brightness")
-                    return 1
-
-            elif args.command == 'set-stop-on-disconnect':
-                enabled = args.enabled.lower() in ('on', '1', 'true')
-                if charger.set_stop_on_disconnect(enabled):
-                    state = "enabled" if enabled else "disabled"
-                    print(f"[+] Stop on disconnect {state}")
-                else:
-                    print("Failed to set stop on disconnect")
-                    return 1
-
-        finally:
-            charger.disconnect()
-
-    return 0
 
 
 if __name__ == "__main__":

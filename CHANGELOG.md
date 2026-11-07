@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-07
+
+A rewrite: async, and built on the finding that the charger speaks OCPP 1.6
+encoded as protobuf (see [docs/PROTOCOL.md](docs/PROTOCOL.md)). Breaking
+changes throughout; see "Migrating from 0.1" in the README.
+
+### Fixed
+
+- **The charger's clock was set to 2025-11-17 17:21:19 UTC on every
+  connection.** The 0.1.x handshake replayed a captured `BootNotification.conf`
+  that carries the current time. Session start times were therefore wrong, and
+  `session_time` grew by a day per day. The client now sends the real time,
+  and answers heartbeats with it too.
+- The handshake no longer contains one particular charger's id. The id now
+  comes from the charger's `BootNotification`, and `device_id` is no longer a
+  parameter.
+- The firmware string no longer picks up the next field's tag byte (`...+102`
+  was really `...+10`). Identity is decoded as a nested message instead of by
+  string slicing.
+- Messages are split by structure: a message ends at its field 101. Reads that
+  split or join messages no longer lose or garble status updates.
+- Connections close gracefully: FIN, then reading until the charger's FIN.
+  This also applies after a fatal error or an idle timeout. 0.1.x closed with
+  unread data, which sends a RST; chargers have been reported to refuse
+  connections for hours after one.
+- `disconnect()` during a `connect()` makes the connect give up, so no session
+  is left holding the charger's single connection slot.
+
+### Added
+
+- `DuosidaClient`: one persistent asyncio connection with a background reader.
+  It keeps `status`, `connector_status` and `transaction_id` up to date from
+  the charger's pushes and calls listeners on every change (`add_listener`,
+  `wait_for_status`, `get_status`).
+- Commands wait for the charger's confirmation. Setters return
+  `ConfigurationStatus` (`ACCEPTED` / `REBOOT_REQUIRED`); rejections raise
+  `CommandRejectedError`.
+- The client answers the charger's requests the way the vendor app does:
+  heartbeats, data transfers, status notifications, meter values and
+  start/stop transactions. `respond_to_charger=False` turns this off. Before,
+  unanswered requests made the charger retransmit them.
+- A keep-alive `TriggerMessage(Heartbeat)` (`keepalive_interval`, 30 s) and an
+  idle watchdog (`idle_timeout`, 60 s).
+- Unanswered requests are resent with the same message id every
+  `retry_interval` (2 s) until the timeout. The charger sometimes ignores a
+  request, and the vendor app resends too.
+- `stop_charging()` stops the active transaction id reported by the charger,
+  not a made-up one.
+- `get_configuration()` / `duosida get-config`: read the configuration
+  (`DataPullAllConfigurationReq`). `max_current` is verified; the other names
+  are provisional. The Wi-Fi SSID and password fields are redacted in output.
+- `ChargerStatus.total_energy` (the charger's own register, field 3),
+  `session_start`, `session_duration`, `transaction_id`, `id_tag`,
+  `vehicle_connected` and raw `unknown` fields.
+- `ConnectorStatus` from `StatusNotification`, sent the moment the state
+  changes.
+- States 7 `Unavailable` and 8 `Faulted`.
+- Discovery: async, repeats the probe every second, accepts `targets` for
+  chargers on another subnet or VLAN, identifies chargers in parallel and
+  returns `DiscoveredCharger` objects.
+- `py.typed`, mypy strict, ruff, 114 tests (Python 3.11–3.14) built from
+  captures of the vendor app, `tools/pcap.py` and `tools/extract_fixtures.py`.
+
+### Changed
+
+- Requires Python 3.11 or later.
+- `ChargerState` is a `StrEnum` with OCPP names: 3 `SuspendedEVSE` (was
+  "Cooling"), 5 `Finishing` (was "Finished"), 6 `Reserved` (was "Holiday").
+- `ChargerStatus` is immutable. `conn_status` → `raw_state`,
+  `temperature_station` → `temperature`, `to_dict()` keys renamed.
+- Exceptions: `DuosidaConnectionError` and `DuosidaTimeoutError` replace
+  `ConnectionError` and `TimeoutError`, which shadowed the built-ins. Added
+  `ProtocolError` and `CommandRejectedError`; `CommunicationError` is gone.
+- CLI: `--device-id` is ignored, and `monitor` prints pushed updates.
+
+### Removed
+
+- The synchronous `DuosidaCharger` class and `monitor()`.
+- `voltage2`/`voltage3`/`current2`/`current3`, which were always 0, and
+  `temperature_internal`.
+
 ## [0.1.3] - 2025-11-20
 
 ### Removed
@@ -53,7 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Updated README.md to use GitHub repository URL instead of git.dias.pt
+- Updated README.md to use the GitHub repository URL instead of a self-hosted mirror
 
 ## [0.1.0] - 2024-11-18
 
@@ -85,6 +166,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python 3.6+ compatible
 - No external dependencies (stdlib only)
 
+[0.2.0]: https://github.com/americodias/duosida-ev/releases/tag/v0.2.0
 [0.1.3]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.3
 [0.1.2]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.2
 [0.1.1]: https://github.com/americodias/duosida-ev/releases/tag/v0.1.1

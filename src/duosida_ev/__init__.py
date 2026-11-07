@@ -1,47 +1,62 @@
-"""
-Duosida EV Charger - Python Library for Direct TCP Control
+"""Local, async control of Duosida EV wall chargers.
 
-This library provides direct TCP communication with Duosida EV wall chargers,
-bypassing the cloud API for local control and monitoring.
+The charger speaks OCPP 1.6 encoded as protobuf on TCP port 9988. This
+library plays the central system for it, the way the vendor app does::
 
-Example usage:
-    from duosida_ev import DuosidaCharger, discover_chargers
+    import asyncio
+    from duosida_ev import DuosidaClient, discover_chargers
 
-    # Discover chargers on the network
-    devices = discover_chargers()
-    for device in devices:
-        print(f"Found: {device['ip']}")
+    async def main() -> None:
+        chargers = await discover_chargers()
+        async with DuosidaClient(chargers[0].host) as charger:
+            print(charger.info)
+            print(await charger.get_status())
+            await charger.set_max_current(16)
 
-    # Connect and get status
-    charger = DuosidaCharger(host="192.168.1.100", device_id="YOUR_DEVICE_ID")
-    charger.connect()
-    status = charger.get_status()
-    print(status)
-    charger.disconnect()
+    asyncio.run(main())
 """
 
-from .charger import DuosidaCharger, ChargerStatus
-from .discovery import discover_chargers
+from .client import DuosidaClient
+from .discovery import DiscoveredCharger, discover_chargers, identify_charger
 from .exceptions import (
-    DuosidaError,
-    ConnectionError,
-    CommunicationError,
     CommandError,
+    CommandRejectedError,
     DiscoveryError,
+    DuosidaConnectionError,
+    DuosidaError,
+    DuosidaTimeoutError,
+    ProtocolError,
     ValidationError,
-    TimeoutError,
+)
+from .models import (
+    ChargerConfiguration,
+    ChargerInfo,
+    ChargerState,
+    ChargerStatus,
+    ConfigurationStatus,
+    ConnectorStatus,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
+
 __all__ = [
-    "DuosidaCharger",
+    "ChargerConfiguration",
+    "ChargerInfo",
+    "ChargerState",
     "ChargerStatus",
-    "discover_chargers",
-    "DuosidaError",
-    "ConnectionError",
-    "CommunicationError",
     "CommandError",
+    "CommandRejectedError",
+    "ConfigurationStatus",
+    "ConnectorStatus",
+    "DiscoveredCharger",
     "DiscoveryError",
+    "DuosidaClient",
+    "DuosidaConnectionError",
+    "DuosidaError",
+    "DuosidaTimeoutError",
+    "ProtocolError",
     "ValidationError",
-    "TimeoutError",
+    "__version__",
+    "discover_chargers",
+    "identify_charger",
 ]

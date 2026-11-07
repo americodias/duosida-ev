@@ -1,0 +1,433 @@
+import asyncio
+import time
+import unittest
+import unittest.mock
+
+from duosida_ev import (
+    ChargerState,
+    CommandRejectedError,
+    ConfigurationStatus,
+    DuosidaClient,
+    DuosidaConnectionError,
+    DuosidaTimeoutError,
+    ValidationError,
+)
+from duosida_ev import protocol as p
+from duosida_ev.protobuf import Message, string_field, varint_field
+from duosida_ev.protocol import Action
+
+from .helpers import DEVICE_ID, MESSAGES, FakeCharger, frame, status_body
+
+
+class ClientTestCase(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.charger = await FakeCharger().__aenter__()
+        self.client = self.make_client()
+
+    async def asyncTearDown(self) -> None:
+        await self.client.disconnect()
+        await self.charger.__aexit__()
+
+    def make_client(self, **kwargs: object) -> DuosidaClient:
+        options: dict[str, object] = {
+            "timeout": 1.0,
+            "keepalive_interval": None,
+            "idle_timeout": None,
+        }
+        options.update(kwargs)
+        return DuosidaClient("127.0.0.1", self.charger.port, **options)  # type: ignore[arg-type]
+
+    async def wait_until(self, predicate, timeout: float = 2.0) -> None:  # type: ignore[no-untyped-def]
+        async with asyncio.timeout(timeout):
+            while not predicate():  # noqa: ASYNC110 - polling client state is the point
+                await asyncio.sleep(0.01)
+
+
+class ConnectTest(ClientTestCase):
+    async def test_connect_identifies_and_sets_clock(self) -> None:
+        info = await self.client.connect()
+        self.assertTrue(self.client.connected)
+        self.assertEqual(info.device_id, DEVICE_ID)
+        self.assertEqual(info.model, "DUOSIDA Mode3@32A")
+        self.assertEqual(self.client.device_id, DEVICE_ID)
+        self.assertIs(self.client.info, info)
+
+        handshake = self.charger.received[0]
+        self.assertEqual(
+            p.encode_frame(
+                handshake.field, handshake.body, handshake.charge_box_id, handshake.message_id
+            ),
+            MESSAGES["app_handshake"],
+        )
+        boot_conf = await self.charger.expect(Action.BOOT_NOTIFICATION.confirmation)
+        self.assertEqual(boot_conf.message_id, frame("boot_notification").message_id)
+        self.assertEqual(boot_conf.charge_box_id, DEVICE_ID)
+        sent_time = Message.decode(boot_conf.body).require(1).as_sint()
+        self.assertLess(abs(sent_time - time.time()), 5)
+
+    async def test_connect_twice_is_a_no_op(self) -> None:
+        first = await self.client.connect()
+        self.assertIs(await self.client.connect(), first)
+        self.assertEqual(self.charger.connections, 1)
+
+    async def test_context_manager(self) -> None:
+        async with self.make_client() as client:
+            self.assertTrue(client.connected)
+        self.assertFalse(client.connected)
+
+    async def test_falls_back_to_id_without_boot_notification(self) -> None:
+        self.charger.send_boot = False
+        info = await self.make_client(timeout=0.3).connect()
+        self.assertEqual(info.device_id, DEVICE_ID)
+        self.assertEqual(info.model, "")
+
+    async def test_reconnect_to_silent_charger_does_not_reuse_old_id(self) -> None:
+        await self.client.connect()
+        await self.client.disconnect()
+        self.charger.answers.clear()
+        self.charger._react = lambda received: None  # type: ignore[method-assign]
+        client = self.client
+        client.timeout = 0.3
+        with self.assertRaises(DuosidaTimeoutError):
+            await client.connect()
+        self.assertFalse(client.connected)
+        self.assertEqual(client.device_id, DEVICE_ID)  # still known from before
+
+    async def test_refused(self) -> None:
+        port = self.charger.port
+        await self.charger.__aexit__()
+        with self.assertRaises(DuosidaConnectionError):
+            await DuosidaClient("127.0.0.1", port, timeout=1.0).connect()
+
+    async def test_silent_peer_times_out(self) -> None:
+        held: list[asyncio.StreamWriter] = []
+        server = await asyncio.start_server(lambda r, w: held.append(w), "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            client = DuosidaClient("127.0.0.1", port, timeout=0.3)
+            with self.assertRaises(DuosidaTimeoutError):
+                await client.connect()
+            self.assertFalse(client.connected)
+        finally:
+            for writer in held:
+                writer.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_not_connected(self) -> None:
+        with self.assertRaises(DuosidaConnectionError):
+            await self.client.start_charging()
+        with self.assertRaises(DuosidaConnectionError):
+            await self.client.wait_for_status()
+
+
+class PushTest(ClientTestCase):
+    async def test_status_push_updates_and_is_acknowledged(self) -> None:
+        await self.client.connect()
+        calls: list[ChargerState | None] = []
+        remove = self.client.add_listener(
+            lambda: calls.append(self.client.status.state if self.client.status else None)
+        )
+        waiting = asyncio.create_task(self.client.wait_for_status())
+        await asyncio.sleep(0)
+        self.charger.push(MESSAGES["status_charging"])
+        status = await waiting
+        self.assertIs(status.state, ChargerState.CHARGING)
+        self.assertIs(self.client.status, status)
+        self.assertEqual(self.client.transaction_id, 1741610)
+        self.assertEqual(calls, [ChargerState.CHARGING])
+        # Same acknowledgement bytes as the vendor app sent for this message.
+        ack = await self.charger.expect(Action.DATA_TRANSFER.confirmation)
+        app_ack = frame("app_data_transfer_conf")
+        self.assertEqual((ack.body, ack.message_id), (app_ack.body, app_ack.message_id))
+        remove()
+        remove()  # removing twice is harmless
+
+    async def test_get_status_waits_then_uses_cache(self) -> None:
+        self.charger.after_boot = (MESSAGES["status_available"],)
+        await self.client.connect()
+        first = await self.client.get_status(timeout=1.0)
+        self.assertIs(first.state, ChargerState.AVAILABLE)
+        self.assertIs(await self.client.get_status(), first)
+
+    async def test_status_notification(self) -> None:
+        await self.client.connect()
+        self.charger.push(MESSAGES["status_notification_preparing"])
+        await self.wait_until(lambda: self.client.connector_status is not None)
+        assert self.client.connector_status is not None
+        self.assertIs(self.client.connector_status.state, ChargerState.PREPARING)
+        conf = await self.charger.expect(Action.STATUS_NOTIFICATION.confirmation)
+        self.assertEqual(conf.body, b"")
+
+    async def test_heartbeat_gets_current_time(self) -> None:
+        await self.client.connect()
+        self.charger.push(MESSAGES["heartbeat_req"])
+        conf = await self.charger.expect(Action.HEARTBEAT.confirmation)
+        self.assertEqual(conf.message_id, frame("heartbeat_req").message_id)
+        self.assertLess(abs(Message.decode(conf.body).require(1).as_int() - time.time()), 5)
+
+    async def test_transactions(self) -> None:
+        await self.client.connect()
+        self.charger.push(MESSAGES["start_transaction_req"])
+        conf = await self.charger.expect(Action.START_TRANSACTION.confirmation)
+        assigned = Message.decode(conf.body).require(2).as_int()
+        self.assertEqual(self.client.transaction_id, assigned)
+        self.charger.push(MESSAGES["meter_values"])
+        await self.charger.expect(Action.METER_VALUES.confirmation)
+        self.assertEqual(self.client.transaction_id, 1741610)
+        self.charger.push(MESSAGES["stop_transaction_req"])
+        await self.charger.expect(Action.STOP_TRANSACTION.confirmation)
+        self.assertIsNone(self.client.transaction_id)
+
+    async def test_passive_mode_only_answers_boot(self) -> None:
+        client = self.make_client(respond_to_charger=False)
+        await client.connect()
+        try:
+            await self.charger.expect(Action.BOOT_NOTIFICATION.confirmation)
+            for name in ("status_charging", "heartbeat_req", "start_transaction_req"):
+                self.charger.push(MESSAGES[name])
+            await self.wait_until(lambda: client.status is not None)
+            await asyncio.sleep(0.1)
+            self.assertEqual(
+                [f.field for f in self.charger.received],
+                [Action.TRIGGER_MESSAGE.request, Action.BOOT_NOTIFICATION.confirmation],
+            )
+        finally:
+            await client.disconnect()
+
+    async def test_garbage_message_is_skipped(self) -> None:
+        await self.client.connect()
+        # A well-framed message whose action is not length-delimited.
+        bad = varint_field(16, 1) + string_field(100, DEVICE_ID) + varint_field(101, 7)
+        self.charger.push(bad + MESSAGES["status_finishing"])
+        await self.wait_until(lambda: self.client.status is not None)
+        self.assertTrue(self.client.connected)
+
+    async def test_listener_errors_do_not_break_reader(self) -> None:
+        await self.client.connect()
+
+        def broken() -> None:
+            raise RuntimeError("boom")
+
+        self.client.add_listener(broken)
+        with self.assertLogs("duosida_ev.client", "ERROR"):
+            self.charger.push(MESSAGES["status_finishing"])
+            await self.wait_until(lambda: self.client.status is not None)
+        self.assertTrue(self.client.connected)
+
+
+class CommandTest(ClientTestCase):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        await self.client.connect()
+
+    async def test_start_charging(self) -> None:
+        await self.client.start_charging()
+        request = await self.charger.expect(Action.REMOTE_START_TRANSACTION.request)
+        self.assertEqual(request.body, frame("app_remote_start").body)
+        self.assertEqual(request.charge_box_id, DEVICE_ID)
+
+    async def test_start_rejected(self) -> None:
+        self.charger.answers[Action.REMOTE_START_TRANSACTION.request] = lambda f: status_body(1)
+        with self.assertRaises(CommandRejectedError) as caught:
+            await self.client.start_charging()
+        self.assertEqual(caught.exception.status, 1)
+        self.assertIn("Rejected", str(caught.exception))
+
+    async def test_stop_uses_active_transaction(self) -> None:
+        self.charger.push(MESSAGES["status_charging"])
+        await self.wait_until(lambda: self.client.transaction_id is not None)
+        await self.client.stop_charging()
+        request = await self.charger.expect(Action.REMOTE_STOP_TRANSACTION.request)
+        self.assertEqual(request.body, frame("app_remote_stop").body)
+
+    async def test_stop_without_transaction_warns(self) -> None:
+        with self.assertLogs("duosida_ev.client", "WARNING"):
+            await self.client.stop_charging()
+        await self.client.stop_charging(transaction_id=42)
+        requests = [f for f in self.charger.received if f.field == 36]
+        self.assertEqual(Message.decode(requests[-1].body).require(1).as_int(), 42)
+
+    async def test_set_max_current(self) -> None:
+        self.assertIs(await self.client.set_max_current(16), ConfigurationStatus.ACCEPTED)
+        request = await self.charger.expect(Action.CHANGE_CONFIGURATION.request)
+        self.assertEqual(request.body, p.change_configuration("VendorMaxWorkCurrent", "16"))
+
+    async def test_every_setter(self) -> None:
+        calls = [
+            (self.client.set_connection_timeout(120), "ConnectionTimeOut", "120"),
+            (self.client.set_max_temperature(90), "VendorMaxWorkTemperature", "90"),
+            (self.client.set_max_voltage(280), "VendorMaxWorkVoltage", "280"),
+            (self.client.set_min_voltage(80), "VendorMinWorkVoltage", "80"),
+            (self.client.set_direct_work_mode(True), "VendorDirectWorkMode", "1"),
+            (self.client.set_led_brightness(3), "VendorLEDStrength", "3"),
+            (self.client.set_stop_on_disconnect(False), "StopTransactionOnEVSideDisconnect", "0"),
+        ]
+        for call, key, value in calls:
+            await call
+            request = await self.charger.expect(Action.CHANGE_CONFIGURATION.request)
+            self.assertEqual(request.body, p.change_configuration(key, value))
+
+    async def test_reboot_required_is_returned(self) -> None:
+        self.charger.answers[Action.CHANGE_CONFIGURATION.request] = lambda f: status_body(2)
+        self.assertIs(await self.client.set_config("X", "1"), ConfigurationStatus.REBOOT_REQUIRED)
+
+    async def test_rejected_configuration(self) -> None:
+        for code in (1, 3, 9):
+            answer = lambda f, c=code: status_body(c)  # noqa: E731
+            self.charger.answers[Action.CHANGE_CONFIGURATION.request] = answer
+            with self.subTest(code=code), self.assertRaises(CommandRejectedError):
+                await self.client.set_max_current(10)
+
+    async def test_validation(self) -> None:
+        for call in (
+            lambda: self.client.set_max_current(5),
+            lambda: self.client.set_max_current(33),
+            lambda: self.client.set_max_current(True),  # type: ignore[arg-type]
+            lambda: self.client.set_max_current(16.0),  # type: ignore[arg-type]
+            lambda: self.client.set_connection_timeout(10),
+            lambda: self.client.set_max_temperature(100),
+            lambda: self.client.set_max_voltage(300),
+            lambda: self.client.set_min_voltage(50),
+            lambda: self.client.set_led_brightness(2),
+        ):
+            with self.assertRaises(ValidationError):
+                await call()
+        self.assertFalse([f for f in self.charger.received if f.field == 10])
+
+    async def test_unanswered_request_is_retransmitted(self) -> None:
+        # Seen live: the charger sometimes ignores a request; the vendor app
+        # sends it again with the same message id.
+        seen: list[int] = []
+
+        def flaky(request):  # type: ignore[no-untyped-def]
+            seen.append(request.message_id)
+            return None if len(seen) == 1 else status_body(0)
+
+        self.charger.answers[Action.CHANGE_CONFIGURATION.request] = flaky
+        self.client.retry_interval = 0.1
+        self.assertIs(await self.client.set_max_current(8), ConfigurationStatus.ACCEPTED)
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0], seen[1])
+
+    async def test_no_retransmission_when_disabled(self) -> None:
+        self.charger.answers[Action.CHANGE_CONFIGURATION.request] = lambda f: None
+        self.client.retry_interval = None
+        self.client.timeout = 0.3
+        with self.assertRaises(DuosidaTimeoutError):
+            await self.client.set_max_current(8)
+        self.assertEqual(len([f for f in self.charger.received if f.field == 10]), 1)
+
+    async def test_no_answer_times_out(self) -> None:
+        self.charger.answers[Action.CHANGE_CONFIGURATION.request] = lambda f: None
+        with self.assertRaises(DuosidaTimeoutError):
+            await self.client.set_max_current(16)
+        self.assertTrue(self.client.connected)
+
+    async def test_get_configuration(self) -> None:
+        config = await self.client.get_configuration()
+        self.assertEqual(config.max_current, 16.0)
+        request = await self.charger.expect(Action.DATA_TRANSFER.request)
+        self.assertEqual(request.body, frame("app_pull_configuration").body)
+
+    async def test_concurrent_commands(self) -> None:
+        results = await asyncio.gather(
+            self.client.set_max_current(10),
+            self.client.set_max_voltage(280),
+            self.client.start_charging(),
+        )
+        self.assertEqual(results[:2], [ConfigurationStatus.ACCEPTED] * 2)
+        ids = [f.message_id for f in self.charger.received if f.field in (10, 34)]
+        self.assertEqual(len(set(ids)), 3)
+
+
+class ConnectionLossTest(ClientTestCase):
+    async def test_drop_fails_pending_and_notifies(self) -> None:
+        await self.client.connect()
+        self.charger.answers[Action.CHANGE_CONFIGURATION.request] = lambda f: None
+        changes: list[bool] = []
+        self.client.add_listener(lambda: changes.append(self.client.connected))
+        pending = asyncio.create_task(self.client.set_max_current(16))
+        await self.charger.expect(Action.CHANGE_CONFIGURATION.request)
+        await self.charger.drop()
+        with self.assertRaises(DuosidaConnectionError):
+            await pending
+        self.assertFalse(self.client.connected)
+        self.assertIn(False, changes)
+        # A new connect() starts over.
+        await self.client.connect()
+        self.assertTrue(self.client.connected)
+        self.assertEqual(self.charger.connections, 2)
+
+    async def test_status_waiter_fails_on_drop(self) -> None:
+        await self.client.connect()
+        waiting = asyncio.create_task(self.client.wait_for_status())
+        await asyncio.sleep(0)
+        await self.charger.drop()
+        with self.assertRaises(DuosidaConnectionError):
+            await waiting
+
+    async def test_idle_timeout_drops_connection(self) -> None:
+        client = self.make_client(idle_timeout=0.2)
+        await client.connect()
+        try:
+            await self.wait_until(lambda: not client.connected)
+        finally:
+            await client.disconnect()
+
+    async def test_keepalive_sends_heartbeat_trigger(self) -> None:
+        client = self.make_client(keepalive_interval=0.05, idle_timeout=5.0)
+        await client.connect()
+        try:
+            trigger = await self.charger.expect(Action.TRIGGER_MESSAGE.request)
+            while trigger.message_id == 0:  # skip the handshake
+                trigger = await self.charger.expect(Action.TRIGGER_MESSAGE.request)
+            self.assertEqual(trigger.body, frame("app_trigger_heartbeat").body)
+            self.assertTrue(client.connected)
+        finally:
+            await client.disconnect()
+
+    async def test_fatal_error_closes_gracefully(self) -> None:
+        self.charger.linger = True
+        await self.client.connect()
+        self.charger.push(b"\x0f\x00")  # wire type 7: the stream cannot be framed
+        await self.wait_until(lambda: not self.client.connected)
+        await self.wait_until(lambda: self.charger.closures)
+        self.assertEqual(self.charger.closures, ["eof"])
+
+    async def test_disconnect_during_connect_leaves_no_session(self) -> None:
+        real_open = asyncio.open_connection
+
+        async def slow_open(*args, **kwargs):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(0.2)
+            return await real_open(*args, **kwargs)
+
+        with unittest.mock.patch("asyncio.open_connection", slow_open):
+            connecting = asyncio.create_task(self.client.connect())
+            await asyncio.sleep(0.05)  # connect() is inside open_connection
+            await self.client.disconnect()
+            with self.assertRaises(DuosidaConnectionError):
+                await connecting
+        self.assertFalse(self.client.connected)
+        await self.wait_until(lambda: self.charger.closures)
+        self.assertEqual(len(self.charger.closures), self.charger.connections)
+
+    async def test_disconnect_sends_fin_and_drains(self) -> None:
+        self.charger.linger = True
+        await self.client.connect()
+        # Data that arrives after our FIN must be read, not answered with a RST.
+        self.charger.push(MESSAGES["status_charging"] + MESSAGES["data_continue"])
+        await self.client.disconnect()
+        await self.wait_until(lambda: self.charger.closures)
+        self.assertEqual(self.charger.closures, ["eof"])
+
+    async def test_disconnect_is_idempotent(self) -> None:
+        await self.client.connect()
+        await self.client.disconnect()
+        await self.client.disconnect()
+        self.assertFalse(self.client.connected)
+        self.assertIsNotNone(self.client.info)
+
+
+if __name__ == "__main__":
+    unittest.main()
