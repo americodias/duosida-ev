@@ -124,6 +124,7 @@ class DuosidaClient:
         self._last_rx = 0.0
         self._heard_id = False  # the charger sent its id on the current connection
         self._trigger_status: int | None = None  # answer to the handshake's trigger
+        self._trigger_message_id: int | None = None  # the charger's id on that answer
         # message id -> (action, sent at, answered): explains late or repeated confs.
         self._finished: dict[int, tuple[str, float, bool]] = {}
 
@@ -215,6 +216,7 @@ class DuosidaClient:
             self._splitter.reset()
             self._heard_id = False
             self._trigger_status = None
+            self._trigger_message_id = None
             self._last_rx = loop.time()
             boot: asyncio.Future[ChargerInfo] = loop.create_future()
             self._boot = boot
@@ -230,11 +232,14 @@ class DuosidaClient:
                 if not self._heard_id or self._charge_box_id is None or not self.connected:
                     await self._close(DuosidaConnectionError("handshake failed"))
                     raise DuosidaTimeoutError("charger did not identify itself") from None
-                _LOGGER.warning(
-                    "%s: no BootNotification (trigger answered %s), continuing with id only",
-                    self.host,
-                    _trigger_status_text(self._trigger_status),
-                )
+                if self._disconnects == generation:  # else closed and raised below
+                    _LOGGER.warning(
+                        "%s: no BootNotification (trigger answered %s), confirming the boot "
+                        "unasked and continuing with id only",
+                        self.host,
+                        _trigger_status_text(self._trigger_status),
+                    )
+                    self._confirm_boot_unasked()
                 info = ChargerInfo(device_id=self._charge_box_id)
                 self._info = info
             except BaseException:
@@ -537,6 +542,7 @@ class DuosidaClient:
             # The handshake's trigger is not a tracked request, and the charger
             # answers it with its own message id.
             self._trigger_status = p.conf_status(frame.body)
+            self._trigger_message_id = frame.message_id
             _LOGGER.debug(
                 "%s: BootNotification trigger answered %s",
                 self.host,
@@ -572,6 +578,34 @@ class DuosidaClient:
                 frame.message_id,
                 delay,
             )
+
+    def _confirm_boot_unasked(self) -> None:
+        """Send a ``BootNotification.conf`` that answers no request we received.
+
+        Twice, after a reconnect, the charger accepted the trigger but sent
+        neither its ``BootNotification`` nor any status. 0.1 sent this
+        confirmation after every trigger, whether the request had come or
+        not, with a fixed id that matched no live request, and the charger
+        set its clock from it. In the capture the charger's
+        ``BootNotification.req`` carries the id just below its answer to the
+        trigger, so that is the id used here; 0 if the trigger was not
+        answered.
+        """
+        assert self._charge_box_id is not None
+        trigger_id = self._trigger_message_id
+        message_id = trigger_id - 1 if trigger_id else 0
+        try:
+            self._write(
+                p.encode_frame(
+                    Action.BOOT_NOTIFICATION.confirmation,
+                    p.boot_notification_conf(_now()),
+                    self._charge_box_id,
+                    message_id,
+                )
+            )
+        except DuosidaConnectionError:
+            return
+        _LOGGER.debug("%s >> BootNotification.conf #%s (unasked)", self.host, message_id)
 
     def _on_boot(self, frame: Frame) -> None:
         info = p.parse_boot_notification(frame.body, frame.charge_box_id)

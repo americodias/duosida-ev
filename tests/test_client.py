@@ -82,6 +82,61 @@ class ConnectTest(ClientTestCase):
         self.assertEqual(info.device_id, DEVICE_ID)
         self.assertEqual(info.model, "")
 
+    async def test_confirms_boot_unasked_without_boot_notification(self) -> None:
+        # Live, twice after a reconnect, the charger accepted the trigger but
+        # sent neither its BootNotification nor any status. 0.1 sent a
+        # BootNotification.conf after every trigger, asked for or not.
+        self.charger.send_boot = False
+        self.charger.trigger_conf = p.encode_frame(
+            Action.TRIGGER_MESSAGE.confirmation, status_body(0), DEVICE_ID, 4242
+        )
+        client = self.make_client(timeout=0.3)
+        try:
+            with self.assertLogs("duosida_ev.client", "DEBUG") as logs:
+                await client.connect()
+            boot_conf = await self.charger.expect(Action.BOOT_NOTIFICATION.confirmation)
+        finally:
+            await client.disconnect()
+        self.assertEqual(boot_conf.charge_box_id, DEVICE_ID)
+        # In the capture the charger's BootNotification.req has the id just
+        # below its answer to the trigger.
+        self.assertEqual(boot_conf.message_id, 4241)
+        body = Message.decode(boot_conf.body)
+        self.assertLess(abs(body.require(1).as_sint() - time.time()), 5)
+        self.assertEqual(body.require(2).as_int(), 0)  # interval
+        self.assertEqual(body.require(3).as_int(), 0)  # Accepted
+        warnings = [line for line in logs.output if line.startswith("WARNING")]
+        self.assertIn("confirming the boot unasked", warnings[0])
+        sent = "BootNotification.conf #4241 (unasked)"
+        self.assertTrue(any(sent in line for line in logs.output))
+
+    async def test_unasked_boot_confirmation_without_trigger_answer_uses_id_0(self) -> None:
+        # The id can come from any message, here a Heartbeat.req instead of
+        # the trigger's answer.
+        self.charger.send_boot = False
+        self.charger.trigger_conf = MESSAGES["heartbeat_req"]
+        client = self.make_client(timeout=0.3)
+        try:
+            await client.connect()
+            boot_conf = await self.charger.expect(Action.BOOT_NOTIFICATION.confirmation)
+        finally:
+            await client.disconnect()
+        self.assertEqual(boot_conf.message_id, 0)
+
+    async def test_no_unasked_boot_confirmation_after_disconnect(self) -> None:
+        self.charger.send_boot = False
+        client = self.make_client(timeout=0.3)
+        connecting = asyncio.create_task(client.connect())
+        await self.charger.expect(Action.TRIGGER_MESSAGE.request)
+        with self.assertNoLogs("duosida_ev.client", "WARNING"):
+            await client.disconnect()
+            with self.assertRaises(DuosidaConnectionError):
+                await connecting
+        await self.wait_until(lambda: len(self.charger.closures) == 1)
+        self.assertNotIn(
+            Action.BOOT_NOTIFICATION.confirmation, [f.field for f in self.charger.received]
+        )
+
     async def test_boot_trigger_answer_is_logged(self) -> None:
         with self.assertLogs("duosida_ev.client", "DEBUG") as logs:
             await self.client.connect()

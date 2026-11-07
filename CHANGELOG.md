@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-11-07
+
+### Fixed
+
+- When the charger's `BootNotification` doesn't come within `timeout` after
+  the handshake's trigger, the client now sends a `BootNotification.conf`
+  anyway, with the current time, before continuing with the id only. On one
+  installation, twice after a reconnect about 30 s after a close, the charger
+  accepted the trigger but then sent no status at all: for 12 minutes the
+  first time, and over 25 minutes the second. 0.1 sent this confirmation
+  after every trigger, whether the request had come or not. Whether it ends
+  that state is not yet verified.
+
 ## [0.2.2] - 2026-11-07
 
 ### Changed

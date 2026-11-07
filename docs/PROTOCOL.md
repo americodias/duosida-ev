@@ -119,13 +119,25 @@ The charger answers the trigger with its own message id, not 0.
 `TriggerMessage.conf` field 1 has only been seen as 0 (Accepted). In OCPP 1.6
 order, 1 would be Rejected and 2 NotImplemented (*unverified*).
 
-Once, after a client reconnected 33 s after closing its previous session, the
+After a client reconnected 33 s after closing its previous session, the
 charger spent about 12 minutes answering the trigger and sending
 `MeterValues.req` on three successive connections. It sent no
 `BootNotification` and no `DataTransfer` at all, so the clients got no status.
-It then recovered by itself, with a normal handshake (*observed once, cause
-unknown*). The status of the trigger's answer was not logged then. The next
-release logs it.
+It then recovered by itself, with a normal handshake. It happened again
+after a later restart (the one in between was fine), with a reconnect about
+30 s after the close: on
+every connection for over 25 minutes the trigger was answered 0 (Accepted),
+and nothing else came in the next 30 s (*observed twice, cause unknown*).
+
+0.1 waited up to 1 s after the trigger and then always sent a
+`BootNotification.conf`, whether the charger's request had come or not,
+with a fixed message id from an old capture. The charger set its clock from
+it, so it applies a confirmation whose id matches no live request. Since
+0.2.3, when the `BootNotification` doesn't come within `timeout`, the client
+sends such a confirmation, with the current time. In the capture the
+charger's `BootNotification.req` carries the id just below its answer to the
+trigger (#134224369 after #134224370), so the client uses that id (*whether
+this ends the stuck state is unverified*).
 
 ## Keep-alive and acknowledgements
 
